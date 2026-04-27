@@ -20,6 +20,7 @@ import { playSfx } from '../systems/SoundSystem';
 
 export class Projectile {
   readonly sprite: Phaser.GameObjects.Rectangle;
+  readonly glow: Phaser.GameObjects.Ellipse;
 
   private readonly spawnedAt: number;
   private readonly direction: Phaser.Math.Vector2;
@@ -32,6 +33,9 @@ export class Projectile {
     this.sprite.setStrokeStyle(2, 0xffffff, 0.82);
     this.sprite.setRotation(Math.atan2(this.direction.y, this.direction.x));
     this.sprite.setDepth(getDepthSort(y) + 300);
+    this.glow = scene.add.ellipse(x - this.direction.x * 9, y - this.direction.y * 9, 26, 12, 0xfff35c, 0.28);
+    this.glow.setRotation(this.sprite.rotation);
+    this.glow.setDepth(this.sprite.depth - 1);
   }
 
   update(deltaMs: number, enemies: Enemy[], props: DestructibleProp[]): boolean {
@@ -43,6 +47,10 @@ export class Projectile {
     this.sprite.x += this.direction.x * PLAYER_SHOT_SPEED * dt;
     this.sprite.y += this.direction.y * PLAYER_SHOT_SPEED * dt;
     this.sprite.setDepth(getDepthSort(this.sprite.y) + 300);
+    this.glow.setPosition(this.sprite.x - this.direction.x * 9, this.sprite.y - this.direction.y * 9);
+    this.glow.setRotation(this.sprite.rotation);
+    this.glow.setDepth(this.sprite.depth - 1);
+    this.glow.setAlpha(0.18 + Math.sin(this.scene.time.now / 34) * 0.08);
 
     if (
       this.scene.time.now - this.spawnedAt > PLAYER_SHOT_LIFESPAN_MS ||
@@ -100,6 +108,7 @@ export class Projectile {
 
   destroy(): void {
     this.destroyed = true;
+    this.glow.destroy();
     this.sprite.destroy();
   }
 

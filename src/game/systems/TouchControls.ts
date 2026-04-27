@@ -172,6 +172,15 @@ export class TouchControls {
       this.setControlsVisible(true);
       const keyName = label === 'SP' ? 'special' : label === 'SHOT' ? 'shoot' : label === 'EVD' ? 'evade' : (label.toLowerCase() as keyof AttackInput);
       this.actions[keyName] = true;
+      this.scene.tweens.killTweensOf(container);
+      container.setScale(container.scaleX * 0.92);
+      this.scene.tweens.add({
+        targets: container,
+        scaleX: container.scaleX / 0.92,
+        scaleY: container.scaleY / 0.92,
+        duration: 120,
+        ease: 'Back.easeOut',
+      });
       pointer.event?.stopPropagation();
     });
     return container;

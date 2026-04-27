@@ -6,6 +6,8 @@ import {
   ENEMY_ATTACK_RANGE_Y,
   ENEMY_SPRITE_DISPLAY_HEIGHT,
   ENEMY_SPRITE_FRAME_HEIGHT,
+  ENEMY_WALK_BOB_PIXELS,
+  ENEMY_WALK_SHADOW_PULSE,
   ENEMY_SPRITE_Y_OFFSET,
   SFX_HIT_HEAVY_KEY,
   WALKABLE_BOTTOM,
@@ -40,7 +42,11 @@ export class Enemy {
   private stateLockedUntil = 0;
   private downUntil = 0;
   private readonly healthBarWidth: number;
+  private readonly baseBodyY: number;
+  private readonly baseShadowAlpha = 0.28;
   private knockbackVelocity = new Phaser.Math.Vector2(0, 0);
+  private moveCycleMs = 0;
+  private isMovePresentationActive = false;
 
   constructor(private scene: Phaser.Scene, x: number, y: number, enemyTypeId: EnemyTypeId = 'razorPunk') {
     this.enemyType = enemyTypes[enemyTypeId];
@@ -55,6 +61,7 @@ export class Enemy {
 
     this.shadow = scene.add.ellipse(0, 4, 52 * spriteScaleMultiplier, 16 * Math.sqrt(spriteScaleMultiplier), 0x000000, 0.28);
     this.body = scene.add.sprite(0, ENEMY_SPRITE_Y_OFFSET, this.enemyType.spriteKey, 0);
+    this.baseBodyY = this.body.y;
     this.body.setOrigin(0.5, 1);
     this.body.setScale((ENEMY_SPRITE_DISPLAY_HEIGHT / ENEMY_SPRITE_FRAME_HEIGHT) * spriteScaleMultiplier);
     this.body.play(this.animationKey('idle'));
@@ -98,6 +105,7 @@ export class Enemy {
       }
 
       this.applyDepthPresentation();
+      this.updateMovementPresentation(deltaMs);
       return;
     }
 
@@ -134,6 +142,7 @@ export class Enemy {
     this.container.x = Phaser.Math.Clamp(this.container.x, WALKABLE_LEFT, WALKABLE_RIGHT);
     this.container.y = Phaser.Math.Clamp(this.container.y, WALKABLE_TOP, WALKABLE_BOTTOM);
     this.applyDepthPresentation();
+    this.updateMovementPresentation(deltaMs);
   }
 
   canAttackPlayer(player: Player, now: number): boolean {
@@ -269,6 +278,35 @@ export class Enemy {
     if (this.body.anims.currentAnim?.key !== key || !this.body.anims.isPlaying) {
       this.body.play(key);
     }
+  }
+
+  private updateMovementPresentation(deltaMs: number): void {
+    const isMoving = this.state === 'chasing';
+
+    if (!isMoving) {
+      this.moveCycleMs = 0;
+      this.body.setY(this.baseBodyY);
+      if (this.isMovePresentationActive && this.state !== 'knockedDown' && this.state !== 'defeated') {
+        this.shadow.setScale(1, 1);
+        this.shadow.setAlpha(this.baseShadowAlpha);
+      }
+      this.isMovePresentationActive = false;
+      return;
+    }
+
+    const typeScale = this.enemyType.spriteScaleMultiplier ?? 1;
+    this.moveCycleMs += deltaMs * Phaser.Math.Clamp(this.speed / ENEMY_SPRITE_DISPLAY_HEIGHT, 0.7, 1.35);
+    const phase = (this.moveCycleMs / 560) * Math.PI * 2;
+    const footLift = (1 - Math.cos(phase * 2)) * 0.5;
+    const plantedWeight = 1 - footLift;
+
+    this.body.setY(this.baseBodyY - ENEMY_WALK_BOB_PIXELS * typeScale * footLift);
+    this.shadow.setScale(
+      1 + ENEMY_WALK_SHADOW_PULSE * plantedWeight,
+      1 + ENEMY_WALK_SHADOW_PULSE * 0.25 * plantedWeight,
+    );
+    this.shadow.setAlpha(0.23 + 0.05 * plantedWeight);
+    this.isMovePresentationActive = true;
   }
 
   private animationKey(name: string): string {

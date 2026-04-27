@@ -7,6 +7,7 @@ interface SfxOptions {
 }
 
 const SOUND_MUTED_STORAGE_KEY = 'neonBrawlerSoundMuted';
+const activeMusicKeys = new Set<string>();
 
 export function playSfx(scene: Phaser.Scene, key: string, options: SfxOptions = {}): void {
   try {
@@ -45,6 +46,12 @@ export function applySoundPreference(scene: Phaser.Scene): boolean {
 
 export function playLoopingMusic(scene: Phaser.Scene, key: string, volume: number): Phaser.Sound.BaseSound | undefined {
   try {
+    activeMusicKeys.forEach((activeKey) => {
+      if (activeKey !== key) {
+        stopMusic(scene, activeKey);
+      }
+    });
+
     const existingMusic = scene.sound.get(key) as Phaser.Sound.BaseSound | null;
     const music = existingMusic ?? scene.sound.add(key, {
       loop: true,
@@ -55,6 +62,7 @@ export function playLoopingMusic(scene: Phaser.Scene, key: string, volume: numbe
       music.play();
     }
 
+    activeMusicKeys.add(key);
     return music;
   } catch {
     // Music should fail soft when browser audio is still locked or an asset is unavailable.
@@ -67,4 +75,5 @@ export function stopMusic(scene: Phaser.Scene, key: string): void {
   if (music?.isPlaying) {
     music.stop();
   }
+  activeMusicKeys.delete(key);
 }

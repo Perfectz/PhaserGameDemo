@@ -42,6 +42,8 @@ import {
   PLAYER_PUNCH_SPRITE_KEY,
   PLAYER_RUN_FRAME_COUNT,
   PLAYER_RUN_FRAME_RATE,
+  PLAYER_RUN_BOB_PIXELS,
+  PLAYER_RUN_SHADOW_PULSE,
   PLAYER_RUN_SPEED_MULTIPLIER,
   PLAYER_RUN_SPRITE_KEY,
   PLAYER_SHOOT_POSE_MS,
@@ -81,8 +83,8 @@ export class Player {
   private readonly stateSprites: Record<string, Phaser.GameObjects.Sprite>;
   private readonly spriteBaseY = new Map<Phaser.GameObjects.Sprite, number>();
   private activeAnimationKey = '';
-  private walkCycleMs = 0;
-  private isWalkPresentationActive = false;
+  private moveCycleMs = 0;
+  private isMovePresentationActive = false;
 
   constructor(private scene: Phaser.Scene, x: number, y: number) {
     this.ensureAnimations();
@@ -156,7 +158,7 @@ export class Player {
       this.state = now < this.shootingUntil ? 'shooting' : isMoving ? (movement.run ? 'running' : 'walking') : 'idle';
     }
     this.syncAnimationState();
-    this.updateWalkPresentation(deltaMs, movement);
+    this.updateMovementPresentation(deltaMs, movement);
   }
 
   beginAttack(now: number, lockMs: number, state: PlayerState = 'attacking', allowInterrupt = false): boolean {
@@ -420,35 +422,42 @@ export class Player {
     }
   }
 
-  private updateWalkPresentation(deltaMs: number, movement: MovementInput): void {
+  private updateMovementPresentation(deltaMs: number, movement: MovementInput): void {
     const walkSprite = this.stateSprites.walking;
+    const runSprite = this.stateSprites.running;
     const baseWalkY = this.spriteBaseY.get(walkSprite) ?? PLAYER_WALK_SPRITE_Y_OFFSET;
+    const baseRunY = this.spriteBaseY.get(runSprite) ?? PLAYER_ACTION_SPRITE_Y_OFFSET;
     const isWalking = this.state === 'walking';
+    const isRunning = this.state === 'running';
 
-    if (!isWalking) {
-      this.walkCycleMs = 0;
+    if (!isWalking && !isRunning) {
+      this.moveCycleMs = 0;
       walkSprite.setY(baseWalkY);
-      if (this.isWalkPresentationActive && this.state !== 'jumping' && this.state !== 'evading') {
+      runSprite.setY(baseRunY);
+      if (this.isMovePresentationActive && this.state !== 'jumping' && this.state !== 'evading') {
         this.shadow.setScale(1, 1);
         this.shadow.setAlpha(0.28);
       }
-      this.isWalkPresentationActive = false;
+      this.isMovePresentationActive = false;
       return;
     }
 
     const movementAmount = Phaser.Math.Clamp(Math.hypot(movement.x, movement.y), 0.45, 1);
-    this.walkCycleMs += deltaMs * movementAmount;
-    const phase = (this.walkCycleMs / 520) * Math.PI * 2;
+    this.moveCycleMs += deltaMs * movementAmount * (isRunning ? 1.24 : 1);
+    const phase = (this.moveCycleMs / (isRunning ? 430 : 520)) * Math.PI * 2;
     const footLift = (1 - Math.cos(phase * 2)) * 0.5;
     const plantedWeight = 1 - footLift;
+    const bobPixels = isRunning ? PLAYER_RUN_BOB_PIXELS : PLAYER_WALK_BOB_PIXELS;
+    const shadowPulse = isRunning ? PLAYER_RUN_SHADOW_PULSE : PLAYER_WALK_SHADOW_PULSE;
 
-    walkSprite.setY(baseWalkY - PLAYER_WALK_BOB_PIXELS * footLift);
+    walkSprite.setY(baseWalkY - (isWalking ? bobPixels * footLift : 0));
+    runSprite.setY(baseRunY - (isRunning ? bobPixels * footLift : 0));
     this.shadow.setScale(
-      1 + PLAYER_WALK_SHADOW_PULSE * plantedWeight,
-      1 + PLAYER_WALK_SHADOW_PULSE * 0.28 * plantedWeight,
+      1 + shadowPulse * plantedWeight,
+      1 + shadowPulse * 0.28 * plantedWeight,
     );
-    this.shadow.setAlpha(0.24 + 0.04 * plantedWeight);
-    this.isWalkPresentationActive = true;
+    this.shadow.setAlpha((isRunning ? 0.22 : 0.24) + 0.04 * plantedWeight);
+    this.isMovePresentationActive = true;
   }
 
   private getAnimationKeyForState(): string {

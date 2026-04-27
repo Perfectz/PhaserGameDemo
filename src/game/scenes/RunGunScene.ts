@@ -22,6 +22,7 @@ import {
 import { GamepadControls } from '../systems/GamepadControls';
 import { TouchControls } from '../systems/TouchControls';
 import { playLoopingMusic, playSfx, stopMusic } from '../systems/SoundSystem';
+import { playFullscreenVideoOverlay } from '../systems/VideoOverlaySystem';
 import { MovementInput } from '../utils/types';
 
 interface RunGunEnemy {
@@ -60,6 +61,8 @@ const RUN_GUN_MID_TEXTURE_KEY = 'run-gun-mid-backdrop';
 const RUN_GUN_FLOOR_TEXTURE_KEY = 'run-gun-floor-tile';
 const RUN_GUN_PLATFORM_TEXTURE_KEY = 'run-gun-platform-tile';
 const RUN_GUN_GOAL_X = WORLD_WIDTH - 120;
+const deathVideoUrl = new URL('../../assets/video/death.mp4', import.meta.url).href;
+const level2WinVideoUrl = new URL('../../assets/video/level2win.mp4', import.meta.url).href;
 
 export class RunGunScene extends Phaser.Scene {
   private player?: Phaser.Physics.Arcade.Sprite;
@@ -82,6 +85,7 @@ export class RunGunScene extends Phaser.Scene {
   private evadeCooldownUntil = 0;
   private evadeDirection: -1 | 1 = 1;
   private stageCleared = false;
+  private endingSequenceActive = false;
   private levelMusic?: Phaser.Sound.BaseSound;
 
   constructor() {
@@ -101,6 +105,7 @@ export class RunGunScene extends Phaser.Scene {
     this.evadeCooldownUntil = 0;
     this.evadeDirection = 1;
     this.stageCleared = false;
+    this.endingSequenceActive = false;
     this.levelMusic = playLoopingMusic(this, LEVEL_2_MUSIC_KEY, 0.34);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.stopLevelMusic();
@@ -129,6 +134,11 @@ export class RunGunScene extends Phaser.Scene {
 
   update(_time: number, deltaMs: number): void {
     if (!this.player || !this.platforms) {
+      return;
+    }
+
+    if (this.endingSequenceActive) {
+      this.updateHud();
       return;
     }
 
@@ -875,6 +885,7 @@ export class RunGunScene extends Phaser.Scene {
     this.enemyBullets = [];
     this.clearText?.setText('STAGE CLEAR\nEXIT REACHED').setVisible(true).setAlpha(0);
     playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.42, rate: 0.72 });
+    this.stopLevelMusic();
     this.tweens.add({
       targets: this.clearText,
       alpha: 1,
@@ -882,7 +893,7 @@ export class RunGunScene extends Phaser.Scene {
       duration: 360,
       ease: 'Back.easeOut',
     });
-    this.time.delayedCall(2600, () => this.returnToTitle());
+    this.time.delayedCall(650, () => this.playEndVideo(level2WinVideoUrl));
   }
 
   private fireEnemyBullet(enemy: RunGunEnemy, toPlayer: Phaser.Math.Vector2): void {
@@ -901,7 +912,7 @@ export class RunGunScene extends Phaser.Scene {
   }
 
   private damagePlayer(damage: number): void {
-    if (!this.player || this.stageCleared || this.time.now < this.playerInvulnerableUntil) {
+    if (!this.player || this.stageCleared || this.endingSequenceActive || this.time.now < this.playerInvulnerableUntil) {
       return;
     }
 
@@ -912,12 +923,12 @@ export class RunGunScene extends Phaser.Scene {
     playSfx(this, SFX_HIT_LIGHT_KEY, { volume: 0.36, rate: 0.82 });
     this.time.delayedCall(130, () => this.player?.clearTint());
     if (this.lives <= 0) {
-      this.returnToTitle();
+      this.playDeathSequence();
     }
   }
 
   private checkRespawn(): void {
-    if (!this.player) {
+    if (!this.player || this.endingSequenceActive) {
       return;
     }
 
@@ -930,7 +941,7 @@ export class RunGunScene extends Phaser.Scene {
     this.player.setVelocity(0, 0);
     this.cameras.main.shake(130, 0.003);
     if (this.lives <= 0) {
-      this.returnToTitle();
+      this.playDeathSequence();
     }
   }
 
@@ -1039,6 +1050,34 @@ export class RunGunScene extends Phaser.Scene {
     }
 
     this.cameras.main.shake(120, 0.0032 * scale);
+  }
+
+  private playDeathSequence(): void {
+    if (this.endingSequenceActive) {
+      return;
+    }
+
+    this.endingSequenceActive = true;
+    this.stopLevelMusic();
+    this.player?.setVelocity(0, 0);
+    this.player?.setTint(0xffef80);
+    playFullscreenVideoOverlay(this, {
+      src: deathVideoUrl,
+      onComplete: () => this.returnToTitle(),
+    });
+  }
+
+  private playEndVideo(src: string): void {
+    if (this.endingSequenceActive) {
+      return;
+    }
+
+    this.endingSequenceActive = true;
+    this.player?.setVelocity(0, 0);
+    playFullscreenVideoOverlay(this, {
+      src,
+      onComplete: () => this.returnToTitle(),
+    });
   }
 
   private stopLevelMusic(): void {

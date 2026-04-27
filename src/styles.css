@@ -22,7 +22,8 @@ canvas {
   background: #07090d;
 }
 
-.intro-video-overlay {
+.intro-video-overlay,
+.cinematic-video-overlay {
   position: fixed;
   inset: 0;
   z-index: 20;
@@ -31,7 +32,8 @@ canvas {
   cursor: pointer;
 }
 
-.intro-video-overlay__video {
+.intro-video-overlay__video,
+.cinematic-video-overlay__video {
   width: 100vw;
   height: 100vh;
   display: block;
@@ -39,7 +41,8 @@ canvas {
   object-position: center center;
 }
 
-.intro-video-overlay__skip {
+.intro-video-overlay__skip,
+.cinematic-video-overlay__skip {
   position: fixed;
   left: 50%;
   bottom: max(22px, env(safe-area-inset-bottom));

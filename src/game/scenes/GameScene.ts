@@ -14,6 +14,7 @@ import { GamepadControls } from '../systems/GamepadControls';
 import { ParallaxBackgroundSystem } from '../systems/ParallaxBackgroundSystem';
 import { SpawnSystem } from '../systems/SpawnSystem';
 import { TouchControls } from '../systems/TouchControls';
+import { playFullscreenVideoOverlay } from '../systems/VideoOverlaySystem';
 import {
   CYBER_STAGE_SHEET_KEY,
   GAME_HEIGHT,
@@ -38,6 +39,9 @@ import {
 import { AttackInput, LevelDefinition, MovementInput, StageSetpiecePlacement, WaveDefinition } from '../utils/types';
 import { playLoopingMusic, playSfx, stopMusic } from '../systems/SoundSystem';
 import { HudState } from './UIScene';
+
+const deathVideoUrl = new URL('../../assets/video/death.mp4', import.meta.url).href;
+const level1WinVideoUrl = new URL('../../assets/video/level1win.mp4', import.meta.url).href;
 
 export class GameScene extends Phaser.Scene {
   private player?: Player;
@@ -124,7 +128,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.isPaused || this.isGameOver) {
-      if (this.isGameOver && this.justDown(this.keys?.R)) {
+      if (this.isGameOver && !this.returnToTitleScheduled && this.justDown(this.keys?.R)) {
         this.restartRun();
       }
       return;
@@ -214,8 +218,12 @@ export class GameScene extends Phaser.Scene {
     this.isPaused = true;
     this.scene.get('UIScene').events.emit('pause:changed', false);
     this.scene.get('UIScene').events.emit('stage:cleared');
-    this.time.delayedCall(2600, () => {
-      this.returnToTitle();
+    this.stopLevelMusic();
+    this.time.delayedCall(650, () => {
+      playFullscreenVideoOverlay(this, {
+        src: level1WinVideoUrl,
+        onComplete: () => this.returnToTitle(),
+      });
     });
   }
 
@@ -386,10 +394,18 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.isGameOver = true;
+    this.returnToTitleScheduled = true;
     this.isPaused = false;
     this.combat?.destroy();
+    this.stopLevelMusic();
     this.scene.get('UIScene').events.emit('pause:changed', false);
     this.scene.get('UIScene').events.emit('game-over:changed', true);
+    this.time.delayedCall(650, () => {
+      playFullscreenVideoOverlay(this, {
+        src: deathVideoUrl,
+        onComplete: () => this.returnToTitle(),
+      });
+    });
   }
 
   private restartRun(): void {

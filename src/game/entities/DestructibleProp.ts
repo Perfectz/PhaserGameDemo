@@ -17,6 +17,7 @@ export class DestructibleProp {
   readonly container: Phaser.GameObjects.Container;
   readonly sprite: Phaser.GameObjects.Sprite;
   readonly shadow: Phaser.GameObjects.Ellipse;
+  readonly rimLight: Phaser.GameObjects.Ellipse;
 
   health: number;
   readonly maxHealth: number;
@@ -33,7 +34,8 @@ export class DestructibleProp {
     this.maxHealth = definition.maxHealth;
     this.health = definition.maxHealth;
 
-    this.shadow = scene.add.ellipse(0, 1, definition.bodyWidth * 0.82, 10, 0x000000, 0.22);
+    this.shadow = scene.add.ellipse(0, 3, definition.bodyWidth * 0.94, 13, 0x000000, 0.24);
+    this.rimLight = scene.add.ellipse(0, 1, definition.bodyWidth * 0.72, 7, 0x8ecae6, 0.12);
     this.sprite = scene.add.sprite(0, 4, DESTRUCTIBLE_SPRITE_KEY, this.getFrameIndex(0));
     this.sprite.setOrigin(0.5, 1);
     this.sprite.setDisplaySize(
@@ -44,7 +46,7 @@ export class DestructibleProp {
     this.container = scene.add.container(
       Phaser.Math.Clamp(x, WALKABLE_LEFT, WALKABLE_RIGHT),
       Phaser.Math.Clamp(y, WALKABLE_TOP, WALKABLE_BOTTOM),
-      [this.shadow, this.sprite],
+      [this.shadow, this.rimLight, this.sprite],
     );
     this.container.setSize(definition.bodyWidth, definition.bodyHeight);
     this.applyDepthPresentation();
@@ -106,12 +108,24 @@ export class DestructibleProp {
       }
       this.setDamageFrame(3);
       this.shadow.setScale(1.1, 0.72);
+      this.rimLight.setAlpha(0);
       this.spawnDebris(knockbackX);
+      this.spawnDustPuff();
     });
   }
 
   private flashHit(knockbackX: number): void {
     this.sprite.setTint(0xfff0a6);
+    const baseScaleX = this.sprite.scaleX;
+    const baseScaleY = this.sprite.scaleY;
+    this.scene.tweens.add({
+      targets: this.sprite,
+      scaleX: baseScaleX * 1.04,
+      scaleY: baseScaleY * 0.96,
+      yoyo: true,
+      duration: 55,
+      ease: 'Sine.easeOut',
+    });
     this.scene.tweens.add({
       targets: this.container,
       x: this.container.x + Math.sign(knockbackX || 1) * 5,
@@ -152,6 +166,31 @@ export class DestructibleProp {
     }
   }
 
+  private spawnDustPuff(): void {
+    for (let index = 0; index < 4; index += 1) {
+      const puff = this.scene.add.ellipse(
+        this.container.x + Phaser.Math.Between(-14, 14),
+        this.container.y - Phaser.Math.Between(6, 18),
+        Phaser.Math.Between(14, 28),
+        Phaser.Math.Between(6, 12),
+        0xb8bec4,
+        0.28,
+      );
+      puff.setDepth(getDepthSort(this.container.y) + 12 + index);
+      this.scene.tweens.add({
+        targets: puff,
+        x: puff.x + Phaser.Math.Between(-18, 18),
+        y: puff.y - Phaser.Math.Between(8, 20),
+        scaleX: 1.6,
+        scaleY: 1.4,
+        alpha: 0,
+        duration: Phaser.Math.Between(260, 420),
+        ease: 'Sine.easeOut',
+        onComplete: () => puff.destroy(),
+      });
+    }
+  }
+
   private getDebrisColor(): number {
     switch (this.definition.id) {
       case 'mailbox':
@@ -173,5 +212,6 @@ export class DestructibleProp {
     const scale = getDepthScale(this.container.y);
     this.container.setScale(scale);
     this.container.setDepth(getDepthSort(this.container.y));
+    this.rimLight.setScale(1, 0.8);
   }
 }
