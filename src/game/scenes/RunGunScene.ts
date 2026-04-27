@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { shooterAssets } from '../data/assets';
 import {
   GAME_HEIGHT,
   GAME_WIDTH,
@@ -13,13 +14,17 @@ import {
   RUN_GUN_HEAVY_GUNNER_SPRITE_KEY,
   RUN_GUN_HOVER_DRONE_SPRITE_KEY,
   RUN_GUN_RIFLE_PUNK_SPRITE_KEY,
-  SFX_ENEMY_DEFEAT_KEY,
   SFX_HIT_LIGHT_KEY,
   SFX_JUMP_KEY,
   SFX_PUNCH_SWING_KEY,
   SFX_UI_SELECT_KEY,
 } from '../utils/constants';
+import { areAssetsLoaded, loadAssetsThenStart } from '../systems/AssetLoaderSystem';
 import { GamepadControls } from '../systems/GamepadControls';
+import { formatRunTime, recordBestTime } from '../systems/DemoProgressSystem';
+import { RunGunEffectsSystem } from '../systems/RunGunEffectsSystem';
+import { RunGunHudSystem } from '../systems/RunGunHudSystem';
+import { RUN_GUN_CHECKPOINTS, RUN_GUN_GOAL_X, RUN_GUN_WORLD_WIDTH, RunGunLevelBuilder } from '../systems/RunGunLevelBuilder';
 import { TouchControls } from '../systems/TouchControls';
 import { playLoopingMusic, playSfx, stopMusic } from '../systems/SoundSystem';
 import { playFullscreenVideoOverlay } from '../systems/VideoOverlaySystem';
@@ -27,6 +32,8 @@ import { MovementInput } from '../utils/types';
 
 interface RunGunEnemy {
   sprite: Phaser.Physics.Arcade.Sprite;
+  healthBack: Phaser.GameObjects.Rectangle;
+  healthFill: Phaser.GameObjects.Rectangle;
   health: number;
   maxHealth: number;
   baseY: number;
@@ -44,23 +51,25 @@ interface RunGunBullet {
   damage: number;
 }
 
-const WORLD_WIDTH = 3600;
 const PLAYER_SCALE = 0.58;
-const PLAYER_SPEED_X = 255;
-const JUMP_SPEED = -530;
-const GRAVITY_Y = 1250;
+const PLAYER_SPEED_X = 274;
+const JUMP_SPEED = -548;
 const RUN_GUN_STARTING_LIVES = 15;
-const SHOT_COOLDOWN_MS = 135;
+const SHOT_COOLDOWN_MS = 112;
 const SHOT_LIFESPAN_MS = 850;
 const RUN_GUN_EVADE_SPEED_X = 690;
 const RUN_GUN_EVADE_DURATION_MS = 190;
 const RUN_GUN_EVADE_INVULNERABLE_MS = 310;
 const RUN_GUN_EVADE_COOLDOWN_MS = 520;
-const RUN_GUN_FAR_TEXTURE_KEY = 'run-gun-far-backdrop';
-const RUN_GUN_MID_TEXTURE_KEY = 'run-gun-mid-backdrop';
-const RUN_GUN_FLOOR_TEXTURE_KEY = 'run-gun-floor-tile';
-const RUN_GUN_PLATFORM_TEXTURE_KEY = 'run-gun-platform-tile';
-const RUN_GUN_GOAL_X = WORLD_WIDTH - 120;
+const RUN_GUN_COYOTE_TIME_MS = 115;
+const RUN_GUN_JUMP_BUFFER_MS = 120;
+const RUN_GUN_JUMP_CUT_MULTIPLIER = 0.48;
+const RUN_GUN_RESPAWN_INVULNERABLE_MS = 1400;
+const RUN_GUN_ENEMY_ACTIVE_AHEAD = 760;
+const RUN_GUN_ENEMY_ACTIVE_BEHIND = 180;
+const RUN_GUN_ENEMY_SHOT_WARNING_MS = 220;
+const RUN_GUN_ENEMY_BULLET_SPEED_MULTIPLIER = 0.88;
+const RUN_GUN_READY_HOLD_MS = 950;
 const deathVideoUrl = new URL('../../assets/video/death.mp4', import.meta.url).href;
 const level2WinVideoUrl = new URL('../../assets/video/level2win.mp4', import.meta.url).href;
 
@@ -75,24 +84,34 @@ export class RunGunScene extends Phaser.Scene {
   private facing: -1 | 1 = 1;
   private nextShotAt = 0;
   private lives = 3;
-  private statusText?: Phaser.GameObjects.Text;
-  private clearText?: Phaser.GameObjects.Text;
   private touchControls?: TouchControls;
   private gamepadControls?: GamepadControls;
   private playerTextureKey = '';
   private playerInvulnerableUntil = 0;
+  private lastGroundedAt = 0;
+  private jumpBufferedUntil = 0;
+  private jumpWasHeld = false;
+  private checkpointX = 120;
   private evadingUntil = 0;
   private evadeCooldownUntil = 0;
   private evadeDirection: -1 | 1 = 1;
   private stageCleared = false;
   private endingSequenceActive = false;
-  private levelMusic?: Phaser.Sound.BaseSound;
+  private isPaused = false;
+  private isReturningToTitle = false;
+  private levelStartedAt = 0;
+  private effects?: RunGunEffectsSystem;
+  private hud?: RunGunHudSystem;
 
   constructor() {
     super('RunGunScene');
   }
 
   create(): void {
+    if (this.loadShooterAssets()) {
+      return;
+    }
+
     this.bullets = [];
     this.enemyBullets = [];
     this.enemies = [];
@@ -101,30 +120,35 @@ export class RunGunScene extends Phaser.Scene {
     this.lives = RUN_GUN_STARTING_LIVES;
     this.playerTextureKey = '';
     this.playerInvulnerableUntil = 0;
+    this.lastGroundedAt = 0;
+    this.jumpBufferedUntil = 0;
+    this.jumpWasHeld = false;
+    this.checkpointX = 120;
     this.evadingUntil = 0;
     this.evadeCooldownUntil = 0;
     this.evadeDirection = 1;
     this.stageCleared = false;
     this.endingSequenceActive = false;
-    this.levelMusic = playLoopingMusic(this, LEVEL_2_MUSIC_KEY, 0.34);
+    this.isPaused = false;
+    this.isReturningToTitle = false;
+    this.levelStartedAt = this.time.now;
+    this.effects = new RunGunEffectsSystem(this);
+    this.hud = new RunGunHudSystem(this, () => this.setRunGunPause(false), () => this.returnToTitle());
+    playLoopingMusic(this, LEVEL_2_MUSIC_KEY, 0.34);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.stopLevelMusic();
       this.scale.off('resize', this.handleResize, this);
     });
-    this.physics.world.gravity.y = GRAVITY_Y;
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, GAME_HEIGHT);
-    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, GAME_HEIGHT);
-
     this.createAnimations();
-    this.createLevelTextures();
-    this.createBackground();
-    this.createPlatforms();
+    this.platforms = new RunGunLevelBuilder(this).create();
     this.createEnemies();
     this.createPlayer();
-    this.createHud();
+    this.hud.create();
+    this.hud.showReadyPrompt(RUN_GUN_READY_HOLD_MS);
+    this.cameras.main.fadeIn(180, 7, 9, 13);
 
     this.cursors = this.input.keyboard?.createCursorKeys();
-    this.keys = this.input.keyboard?.addKeys('W,A,S,D,E,O,SPACE,ENTER,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
+    this.keys = this.input.keyboard?.addKeys('W,A,S,D,E,O,P,SPACE,ENTER,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
     this.touchControls = new TouchControls(this);
     this.touchControls.updateLayout(GAME_WIDTH, GAME_HEIGHT);
     this.gamepadControls = new GamepadControls(this);
@@ -132,8 +156,41 @@ export class RunGunScene extends Phaser.Scene {
     this.scale.on('resize', this.handleResize, this);
   }
 
+  private loadShooterAssets(): boolean {
+    if (areAssetsLoaded(this, shooterAssets)) {
+      return false;
+    }
+
+    const loadingText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'LOADING SHOOTER 0%', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '18px',
+      color: '#ffd166',
+      stroke: '#07090d',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(30000);
+
+    return loadAssetsThenStart(
+      this,
+      shooterAssets,
+      () => {
+        this.load.off(Phaser.Loader.Events.PROGRESS);
+        this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR);
+        loadingText.destroy();
+        this.scene.restart();
+      },
+      (progress) => loadingText.setText(`LOADING SHOOTER ${Math.round(progress * 100)}%`),
+      () => loadingText.setText('LOADING SHOOTER... RETRY NEEDED'),
+    );
+  }
+
   update(_time: number, deltaMs: number): void {
     if (!this.player || !this.platforms) {
+      return;
+    }
+
+    if (this.isPaused) {
+      this.handlePauseInput();
+      this.updateHud();
       return;
     }
 
@@ -143,6 +200,7 @@ export class RunGunScene extends Phaser.Scene {
     }
 
     this.updatePlayer();
+    this.updateCheckpointProgress();
     this.checkStageClear();
     if (this.stageCleared) {
       this.updateHud();
@@ -187,223 +245,6 @@ export class RunGunScene extends Phaser.Scene {
       frameRate,
       repeat: -1,
     });
-  }
-
-  private createLevelTextures(): void {
-    if (!this.textures.exists(RUN_GUN_FAR_TEXTURE_KEY)) {
-      const far = this.textures.createCanvas(RUN_GUN_FAR_TEXTURE_KEY, 960, 260)!;
-      const context = far.context;
-      const sky = context.createLinearGradient(0, 0, 0, 260);
-      sky.addColorStop(0, '#08131f');
-      sky.addColorStop(0.58, '#102636');
-      sky.addColorStop(1, '#18222f');
-      context.fillStyle = sky;
-      context.fillRect(0, 0, 960, 260);
-
-      context.fillStyle = 'rgba(71, 197, 255, 0.18)';
-      context.beginPath();
-      context.arc(790, 58, 72, 0, Math.PI * 2);
-      context.fill();
-
-      for (let index = 0; index < 30; index += 1) {
-        const x = index * 34 + (index % 3) * 8;
-        const width = 32 + (index % 5) * 10;
-        const height = 68 + (index % 7) * 18;
-        context.fillStyle = index % 2 === 0 ? '#101b27' : '#132130';
-        context.fillRect(x, 220 - height, width, height);
-        context.fillStyle = index % 3 === 0 ? 'rgba(255, 209, 102, 0.62)' : 'rgba(70, 210, 255, 0.42)';
-        for (let row = 0; row < Math.floor(height / 18); row += 1) {
-          for (let column = 0; column < Math.floor(width / 16); column += 1) {
-            if ((row + column + index) % 3 !== 0) {
-              context.fillRect(x + 7 + column * 15, 220 - height + 12 + row * 17, 5, 3);
-            }
-          }
-        }
-      }
-
-      context.fillStyle = 'rgba(20, 44, 58, 0.75)';
-      context.fillRect(0, 224, 960, 36);
-      context.strokeStyle = 'rgba(82, 220, 255, 0.24)';
-      context.lineWidth = 2;
-      for (let x = 0; x < 960; x += 96) {
-        context.beginPath();
-        context.moveTo(x, 224);
-        context.lineTo(x + 68, 260);
-        context.stroke();
-      }
-      far.refresh();
-    }
-
-    if (!this.textures.exists(RUN_GUN_MID_TEXTURE_KEY)) {
-      const mid = this.textures.createCanvas(RUN_GUN_MID_TEXTURE_KEY, 960, 340)!;
-      const context = mid.context;
-      context.clearRect(0, 0, 960, 340);
-
-      const wall = context.createLinearGradient(0, 0, 0, 340);
-      wall.addColorStop(0, '#182734');
-      wall.addColorStop(1, '#202a34');
-      context.fillStyle = wall;
-      context.fillRect(0, 46, 960, 294);
-
-      for (let x = 0; x < 960; x += 160) {
-        context.fillStyle = x % 320 === 0 ? '#263746' : '#22303d';
-        context.fillRect(x + 12, 72, 116, 206);
-        context.strokeStyle = 'rgba(132, 239, 255, 0.22)';
-        context.lineWidth = 3;
-        context.strokeRect(x + 12, 72, 116, 206);
-        context.fillStyle = 'rgba(5, 10, 15, 0.48)';
-        context.fillRect(x + 28, 96, 84, 42);
-        context.fillRect(x + 28, 158, 84, 42);
-        context.fillStyle = 'rgba(255, 82, 49, 0.66)';
-        context.fillRect(x + 32, 144, 74, 4);
-        context.fillStyle = 'rgba(75, 222, 255, 0.5)';
-        context.fillRect(x + 34, 208, 70, 5);
-      }
-
-      context.strokeStyle = '#324657';
-      context.lineWidth = 16;
-      context.beginPath();
-      context.moveTo(0, 286);
-      context.lineTo(960, 286);
-      context.stroke();
-      context.strokeStyle = 'rgba(255, 209, 102, 0.5)';
-      context.lineWidth = 3;
-      for (let x = -80; x < 960; x += 80) {
-        context.beginPath();
-        context.moveTo(x, 302);
-        context.lineTo(x + 42, 272);
-        context.stroke();
-      }
-
-      context.strokeStyle = 'rgba(78, 224, 255, 0.38)';
-      context.lineWidth = 7;
-      context.beginPath();
-      context.moveTo(0, 54);
-      context.lineTo(960, 54);
-      context.stroke();
-      mid.refresh();
-    }
-
-    if (!this.textures.exists(RUN_GUN_FLOOR_TEXTURE_KEY)) {
-      const floor = this.textures.createCanvas(RUN_GUN_FLOOR_TEXTURE_KEY, 512, 96)!;
-      const context = floor.context;
-      const metal = context.createLinearGradient(0, 0, 0, 96);
-      metal.addColorStop(0, '#3a414a');
-      metal.addColorStop(0.55, '#242a32');
-      metal.addColorStop(1, '#151a20');
-      context.fillStyle = metal;
-      context.fillRect(0, 0, 512, 96);
-
-      for (let x = 0; x < 512; x += 128) {
-        context.strokeStyle = 'rgba(151, 177, 190, 0.28)';
-        context.lineWidth = 2;
-        context.strokeRect(x + 4, 8, 120, 76);
-        context.fillStyle = 'rgba(10, 14, 18, 0.28)';
-        context.fillRect(x + 10, 16, 108, 20);
-        context.fillStyle = x % 256 === 0 ? 'rgba(255, 209, 102, 0.74)' : 'rgba(48, 220, 255, 0.58)';
-        context.fillRect(x + 16, 74, 94, 4);
-        context.fillStyle = '#12161b';
-        context.beginPath();
-        context.arc(x + 18, 18, 3, 0, Math.PI * 2);
-        context.arc(x + 110, 18, 3, 0, Math.PI * 2);
-        context.arc(x + 18, 76, 3, 0, Math.PI * 2);
-        context.arc(x + 110, 76, 3, 0, Math.PI * 2);
-        context.fill();
-      }
-
-      context.fillStyle = 'rgba(255, 183, 64, 0.9)';
-      for (let x = -20; x < 512; x += 42) {
-        context.beginPath();
-        context.moveTo(x, 0);
-        context.lineTo(x + 22, 0);
-        context.lineTo(x + 4, 14);
-        context.lineTo(x - 18, 14);
-        context.closePath();
-        context.fill();
-      }
-      floor.refresh();
-    }
-
-    if (!this.textures.exists(RUN_GUN_PLATFORM_TEXTURE_KEY)) {
-      const platform = this.textures.createCanvas(RUN_GUN_PLATFORM_TEXTURE_KEY, 256, 36)!;
-      const context = platform.context;
-      const metal = context.createLinearGradient(0, 0, 0, 36);
-      metal.addColorStop(0, '#4a5b66');
-      metal.addColorStop(0.38, '#2d3842');
-      metal.addColorStop(1, '#161d24');
-      context.fillStyle = metal;
-      context.fillRect(0, 0, 256, 36);
-      context.strokeStyle = 'rgba(142, 234, 255, 0.52)';
-      context.lineWidth = 2;
-      context.strokeRect(1, 1, 254, 34);
-      context.fillStyle = 'rgba(255, 209, 102, 0.72)';
-      for (let x = 8; x < 256; x += 46) {
-        context.fillRect(x, 7, 22, 3);
-      }
-      context.strokeStyle = 'rgba(7, 10, 14, 0.55)';
-      context.lineWidth = 3;
-      for (let x = 0; x < 256; x += 64) {
-        context.beginPath();
-        context.moveTo(x, 0);
-        context.lineTo(x + 38, 36);
-        context.stroke();
-      }
-      platform.refresh();
-    }
-  }
-
-  private createBackground(): void {
-    this.add.rectangle(0, 0, WORLD_WIDTH, GAME_HEIGHT, 0x071019).setOrigin(0).setDepth(-40);
-    this.add.tileSprite(0, 0, WORLD_WIDTH, 260, RUN_GUN_FAR_TEXTURE_KEY).setOrigin(0, 0).setDepth(-35);
-    this.add.tileSprite(0, 78, WORLD_WIDTH, 340, RUN_GUN_MID_TEXTURE_KEY).setOrigin(0, 0).setDepth(-26);
-
-    for (let x = 0; x < WORLD_WIDTH; x += 420) {
-      this.add.rectangle(x + 124, 88, 18, 340, 0x102130, 0.92).setOrigin(0.5, 0).setDepth(-18);
-      this.add.rectangle(x + 132, 90, 4, 334, 0x49dcff, 0.32).setOrigin(0.5, 0).setDepth(-17);
-      this.add.rectangle(x + 300, 246, 230, 16, 0x293541, 0.86).setOrigin(0.5, 0).setDepth(-16);
-      this.add.rectangle(x + 300, 252, 228, 3, 0xffd166, 0.45).setOrigin(0.5, 0).setDepth(-15);
-    }
-
-    for (let x = 80; x < WORLD_WIDTH; x += 520) {
-      this.add.rectangle(x, 428, 260, 18, 0x111923, 0.86).setOrigin(0.5, 0).setDepth(-8);
-      this.add.rectangle(x, 432, 260, 3, 0x38d9ff, 0.45).setOrigin(0.5, 0).setDepth(-7);
-    }
-
-    this.add.rectangle(RUN_GUN_GOAL_X, 286, 18, 350, 0xffd166, 0.82).setOrigin(0.5, 0).setDepth(-4);
-    this.add.rectangle(RUN_GUN_GOAL_X, 286, 72, 34, 0x101923, 0.95).setDepth(-3).setStrokeStyle(2, 0xffd166, 0.9);
-    this.add.text(RUN_GUN_GOAL_X, 286, 'EXIT', {
-      fontFamily: 'Arial Black, Arial, sans-serif',
-      fontSize: '16px',
-      color: '#fff4a3',
-      stroke: '#05080c',
-      strokeThickness: 4,
-    }).setOrigin(0.5).setDepth(-2);
-  }
-
-  private createPlatforms(): void {
-    this.platforms = this.physics.add.staticGroup();
-    this.addPlatform(0, 492, WORLD_WIDTH, 96, 0x252b34);
-    this.addPlatform(430, 392, 280, 28, 0x34414d);
-    this.addPlatform(820, 318, 250, 28, 0x34414d);
-    this.addPlatform(1190, 430, 320, 28, 0x34414d);
-    this.addPlatform(1620, 350, 260, 28, 0x34414d);
-    this.addPlatform(2010, 276, 230, 28, 0x34414d);
-    this.addPlatform(2370, 420, 360, 28, 0x34414d);
-    this.addPlatform(2890, 338, 300, 28, 0x34414d);
-    this.addPlatform(3260, 455, 310, 28, 0x34414d);
-  }
-
-  private addPlatform(x: number, y: number, width: number, height: number, color: number): void {
-    const textureKey = height > 60 ? RUN_GUN_FLOOR_TEXTURE_KEY : RUN_GUN_PLATFORM_TEXTURE_KEY;
-    const platform = this.add.tileSprite(x + width / 2, y + height / 2, width, height, textureKey);
-    platform.setTint(color);
-    this.platforms?.add(platform);
-    (platform.body as Phaser.Physics.Arcade.StaticBody | undefined)?.updateFromGameObject();
-
-    const topLight = this.add.rectangle(x + width / 2, y + 3, width, 3, height > 60 ? 0xffd166 : 0x8ecae6, 0.42).setDepth(25);
-    const lowerShadow = this.add.rectangle(x + width / 2, y + height - 3, width, 4, 0x05080c, 0.34).setDepth(24);
-    topLight.setOrigin(0.5, 0.5);
-    lowerShadow.setOrigin(0.5, 0.5);
   }
 
   private createPlayer(): void {
@@ -549,8 +390,17 @@ export class RunGunScene extends Phaser.Scene {
       sprite.setVelocity(0, 0);
       sprite.body.allowGravity = false;
       sprite.play(definition.animationKey);
+      const healthBack = this.add.rectangle(definition.x, definition.y - (definition.hover ? 70 : 156), 54, 6, 0x07090d, 0.78)
+        .setDepth(2260)
+        .setVisible(false);
+      const healthFill = this.add.rectangle(definition.x - 25, definition.y - (definition.hover ? 70 : 156), 50, 3, 0x8ecae6, 0.92)
+        .setOrigin(0, 0.5)
+        .setDepth(2261)
+        .setVisible(false);
       this.enemies.push({
         sprite,
+        healthBack,
+        healthFill,
         health: definition.health,
         maxHealth: definition.health,
         baseY: definition.y,
@@ -563,47 +413,20 @@ export class RunGunScene extends Phaser.Scene {
     });
   }
 
-  private createHud(): void {
-    this.statusText = this.add.text(18, 16, '', {
-      fontFamily: 'Arial Black, Arial, sans-serif',
-      fontSize: '14px',
-      color: '#f8fbff',
-      stroke: '#07090d',
-      strokeThickness: 4,
-    }).setScrollFactor(0).setDepth(5000);
-
-    this.add.text(18, 492, 'Run-Gun Test: A/D move, Space jump, E/LB/LT evade, O shoot, direction keys aim, Esc menu', {
-      fontFamily: 'Arial, sans-serif',
-      fontSize: '14px',
-      color: '#9fd3ff',
-      stroke: '#07090d',
-      strokeThickness: 3,
-    }).setScrollFactor(0).setDepth(5000);
-
-    this.clearText = this.add.text(GAME_WIDTH / 2, 190, '', {
-      fontFamily: 'Arial Black, Arial, sans-serif',
-      fontSize: '34px',
-      color: '#fff4a3',
-      align: 'center',
-      stroke: '#080b10',
-      strokeThickness: 7,
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(5200).setVisible(false);
-  }
-
   private updatePlayer(): void {
     if (!this.player) {
       return;
     }
 
-    if (this.justDown(this.keys?.ESC)) {
-      this.returnToTitle();
+    if (this.justDown(this.keys?.ESC) || this.justDown(this.keys?.P)) {
+      this.setRunGunPause(true);
       return;
     }
 
     const gamepadInput = this.gamepadControls?.getInput();
     const touchInput = this.touchControls?.getInput();
     if (gamepadInput?.pause || gamepadInput?.cancel) {
-      this.returnToTitle();
+      this.setRunGunPause(true);
       return;
     }
 
@@ -612,13 +435,21 @@ export class RunGunScene extends Phaser.Scene {
     const up = Boolean(this.cursors?.up.isDown || this.keys?.W?.isDown);
     const down = Boolean(this.cursors?.down.isDown || this.keys?.S?.isDown);
     const shoot = Boolean(this.keys?.O?.isDown || touchInput?.actions.shoot || gamepadInput?.shootHeld);
+    const jumpPressed = Boolean(this.justDown(this.keys?.SPACE) || this.justDown(this.cursors?.space) || touchInput?.actions.jump || gamepadInput?.actions.jump);
+    const jumpHeld = Boolean(this.keys?.SPACE?.isDown || this.cursors?.space?.isDown || touchInput?.actions.jump || gamepadInput?.actions.jump);
 
     const moveX = Phaser.Math.Clamp((right ? 1 : 0) - (left ? 1 : 0) + (touchInput?.movement.x ?? 0) + (gamepadInput?.movement.x ?? 0), -1, 1);
     if (moveX !== 0) {
       this.facing = moveX > 0 ? 1 : -1;
     }
 
-    const onFloor = this.player.body?.blocked.down || this.player.body?.touching.down;
+    const onFloor = Boolean(this.player.body?.blocked.down || this.player.body?.touching.down);
+    if (onFloor) {
+      this.lastGroundedAt = this.time.now;
+    }
+    if (jumpPressed) {
+      this.jumpBufferedUntil = this.time.now + RUN_GUN_JUMP_BUFFER_MS;
+    }
     const keyboardAim = this.getAimDirection(left, right, up, down);
     const gamepadAim = gamepadInput?.aim ?? { x: 0, y: 0 };
     const touchAim = touchInput?.movement ?? { x: 0, y: 0 };
@@ -637,14 +468,21 @@ export class RunGunScene extends Phaser.Scene {
       this.showEvadePose();
       return;
     }
-    this.player.setAlpha(1);
+    this.player.setAlpha(this.time.now < this.playerInvulnerableUntil ? 0.66 + Math.sin(this.time.now / 42) * 0.18 : 1);
 
     this.player.setVelocityX(moveX * PLAYER_SPEED_X);
 
-    if ((this.justDown(this.keys?.SPACE) || this.justDown(this.cursors?.space) || touchInput?.actions.jump || gamepadInput?.actions.jump) && onFloor) {
+    if (this.jumpBufferedUntil >= this.time.now && this.time.now - this.lastGroundedAt <= RUN_GUN_COYOTE_TIME_MS) {
       this.player.setVelocityY(JUMP_SPEED);
+      this.jumpBufferedUntil = 0;
+      this.lastGroundedAt = 0;
       playSfx(this, SFX_JUMP_KEY, { volume: 0.34 });
     }
+    const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
+    if (!jumpHeld && this.jumpWasHeld && playerBody.velocity.y < 0) {
+      this.player.setVelocityY(playerBody.velocity.y * RUN_GUN_JUMP_CUT_MULTIPLIER);
+    }
+    this.jumpWasHeld = jumpHeld;
 
     if (shoot) {
       this.tryShoot(aim);
@@ -766,6 +604,7 @@ export class RunGunScene extends Phaser.Scene {
 
     const x = this.player.x + aim.x * 48;
     const y = this.player.y - 82 + aim.y * 34;
+    this.effects?.spawnPlayerMuzzleFlash(x, y, Math.atan2(aim.y, aim.x));
     const body = this.add.rectangle(x, y, 24, 5, 0xfff35c, 1);
     body.setStrokeStyle(2, 0xffffff, 0.85);
     body.setRotation(Math.atan2(aim.y, aim.x));
@@ -799,13 +638,13 @@ export class RunGunScene extends Phaser.Scene {
           enemy.health -= bullet.damage;
           enemy.sprite.setTint(0xffef80);
           this.time.delayedCall(80, () => enemy.sprite.clearTint());
-          this.spawnSpark(bullet.body.x, bullet.body.y);
+          this.effects?.spawnSpark(bullet.body.x, bullet.body.y);
           bullet.body.destroy();
           return false;
         }
       }
 
-      if (bullet.body.x < -80 || bullet.body.x > WORLD_WIDTH + 80 || bullet.body.y < -120 || bullet.body.y > GAME_HEIGHT + 120) {
+      if (bullet.body.x < -80 || bullet.body.x > RUN_GUN_WORLD_WIDTH + 80 || bullet.body.y < -120 || bullet.body.y > GAME_HEIGHT + 120) {
         bullet.body.destroy();
         return false;
       }
@@ -815,7 +654,7 @@ export class RunGunScene extends Phaser.Scene {
     });
   }
 
-  private updateEnemyBullets(deltaMs: number): void {
+  private updateEnemyBullets(_deltaMs: number): void {
     if (!this.player) {
       return;
     }
@@ -835,7 +674,7 @@ export class RunGunScene extends Phaser.Scene {
         return false;
       }
 
-      if (bullet.body.x < -80 || bullet.body.x > WORLD_WIDTH + 80 || bullet.body.y < -120 || bullet.body.y > GAME_HEIGHT + 120) {
+      if (bullet.body.x < -80 || bullet.body.x > RUN_GUN_WORLD_WIDTH + 80 || bullet.body.y < -120 || bullet.body.y > GAME_HEIGHT + 120) {
         bullet.body.destroy();
         return false;
       }
@@ -844,10 +683,11 @@ export class RunGunScene extends Phaser.Scene {
     });
   }
 
-  private updateEnemies(deltaMs: number): void {
-    const dt = deltaMs / 1000;
+  private updateEnemies(_deltaMs: number): void {
     this.enemies = this.enemies.filter((enemy) => {
       if (!enemy.sprite.active) {
+        enemy.healthBack.destroy();
+        enemy.healthFill.destroy();
         return false;
       }
 
@@ -857,7 +697,13 @@ export class RunGunScene extends Phaser.Scene {
         : enemy.baseY;
 
       if (enemy.health <= 0) {
-        this.spawnExplosion(enemy.sprite.x, enemy.sprite.y - (enemy.hover ? 32 : 86), enemy.hover ? 0.85 : enemy.maxHealth > 40 ? 1.24 : 1);
+        this.effects?.spawnExplosion(enemy.sprite.x, enemy.sprite.y - (enemy.hover ? 32 : 86), enemy.hover ? 0.85 : enemy.maxHealth > 40 ? 1.24 : 1);
+        if (enemy.maxHealth > 40 && this.lives < RUN_GUN_STARTING_LIVES) {
+          this.lives += 1;
+          this.effects?.spawnLifeRecovery(enemy.sprite.x, enemy.sprite.y - 94);
+        }
+        enemy.healthBack.destroy();
+        enemy.healthFill.destroy();
         enemy.sprite.destroy();
         return false;
       }
@@ -865,9 +711,13 @@ export class RunGunScene extends Phaser.Scene {
       if (this.player) {
         const toPlayer = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - 76 - enemy.sprite.y);
         enemy.sprite.setScale(Math.abs(enemy.sprite.scaleX) * (toPlayer.x > 0 ? -1 : 1), enemy.sprite.scaleY);
-        if (this.time.now >= enemy.nextShotAt && Math.abs(toPlayer.x) < 780) {
-          this.fireEnemyBullet(enemy, toPlayer);
+        const engaging = this.canEnemyEngage(enemy);
+        this.updateEnemyHealthBar(enemy, engaging || enemy.health < enemy.maxHealth);
+        if (engaging && this.time.now >= enemy.nextShotAt) {
+          this.telegraphEnemyShot(enemy);
           enemy.nextShotAt = this.time.now + enemy.fireDelayMs + Phaser.Math.Between(-160, 180);
+        } else if (!engaging && enemy.nextShotAt < this.time.now + 320) {
+          enemy.nextShotAt = this.time.now + 320;
         }
       }
 
@@ -881,19 +731,67 @@ export class RunGunScene extends Phaser.Scene {
     }
 
     this.stageCleared = true;
+    const elapsedMs = this.time.now - this.levelStartedAt;
+    const isBestTime = recordBestTime('shooter', elapsedMs);
     this.enemyBullets.forEach((bullet) => bullet.body.destroy());
     this.enemyBullets = [];
-    this.clearText?.setText('STAGE CLEAR\nEXIT REACHED').setVisible(true).setAlpha(0);
+    this.hud?.showClear(`STAGE CLEAR\n${formatRunTime(elapsedMs)}${isBestTime ? '  NEW BEST' : ''}`);
     playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.42, rate: 0.72 });
     this.stopLevelMusic();
-    this.tweens.add({
-      targets: this.clearText,
-      alpha: 1,
-      y: 178,
-      duration: 360,
-      ease: 'Back.easeOut',
-    });
     this.time.delayedCall(650, () => this.playEndVideo(level2WinVideoUrl));
+  }
+
+  private canEnemyEngage(enemy: RunGunEnemy): boolean {
+    if (!this.player || this.stageCleared || this.endingSequenceActive) {
+      return false;
+    }
+
+    const distanceAhead = enemy.sprite.x - this.player.x;
+    return distanceAhead < RUN_GUN_ENEMY_ACTIVE_AHEAD && distanceAhead > -RUN_GUN_ENEMY_ACTIVE_BEHIND;
+  }
+
+  private updateEnemyHealthBar(enemy: RunGunEnemy, visible: boolean): void {
+    const barY = enemy.sprite.y - (enemy.hover ? 70 : 156);
+    const healthPercent = Phaser.Math.Clamp(enemy.health / enemy.maxHealth, 0, 1);
+    enemy.healthBack.setPosition(enemy.sprite.x, barY).setVisible(visible);
+    enemy.healthFill
+      .setPosition(enemy.sprite.x - 25, barY)
+      .setScale(healthPercent, 1)
+      .setFillStyle(healthPercent < 0.32 ? 0xef476f : healthPercent < 0.62 ? 0xffd166 : 0x8ecae6, 0.92)
+      .setVisible(visible);
+  }
+
+  private telegraphEnemyShot(enemy: RunGunEnemy): void {
+    if (!this.player) {
+      return;
+    }
+
+    const muzzleX = enemy.sprite.x + (this.player.x > enemy.sprite.x ? 42 : -42);
+    const muzzleY = enemy.sprite.y - (enemy.hover ? 34 : 92);
+    const toPlayer = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - 76 - enemy.sprite.y);
+    const angle = Math.atan2(toPlayer.y, toPlayer.x);
+    const warning = this.add.rectangle(muzzleX, muzzleY, 38, 5, 0xffd166, 0.86)
+      .setRotation(angle)
+      .setDepth(2120);
+    warning.setStrokeStyle(2, 0xffffff, 0.72);
+    this.tweens.add({
+      targets: warning,
+      scaleX: 1.35,
+      alpha: 0.2,
+      yoyo: true,
+      duration: RUN_GUN_ENEMY_SHOT_WARNING_MS / 2,
+      ease: 'Sine.easeInOut',
+      onComplete: () => warning.destroy(),
+    });
+
+    this.time.delayedCall(RUN_GUN_ENEMY_SHOT_WARNING_MS, () => {
+      if (!this.player || !enemy.sprite.active || !this.canEnemyEngage(enemy)) {
+        return;
+      }
+
+      const updatedToPlayer = new Phaser.Math.Vector2(this.player.x - enemy.sprite.x, this.player.y - 76 - enemy.sprite.y);
+      this.fireEnemyBullet(enemy, updatedToPlayer);
+    });
   }
 
   private fireEnemyBullet(enemy: RunGunEnemy, toPlayer: Phaser.Math.Vector2): void {
@@ -905,7 +803,10 @@ export class RunGunScene extends Phaser.Scene {
     this.physics.add.existing(body);
     const arcadeBody = body.body as Phaser.Physics.Arcade.Body;
     arcadeBody.setAllowGravity(false);
-    arcadeBody.setVelocity(direction.x * enemy.bulletSpeed, direction.y * enemy.bulletSpeed);
+    arcadeBody.setVelocity(
+      direction.x * enemy.bulletSpeed * RUN_GUN_ENEMY_BULLET_SPEED_MULTIPLIER,
+      direction.y * enemy.bulletSpeed * RUN_GUN_ENEMY_BULLET_SPEED_MULTIPLIER,
+    );
     arcadeBody.setSize(18, 18);
     this.enemyBullets.push({ body, velocity: direction.clone(), bornAt: this.time.now, damage: enemy.damage });
     playSfx(this, SFX_PUNCH_SWING_KEY, { volume: 0.12, rate: 0.82 });
@@ -917,8 +818,9 @@ export class RunGunScene extends Phaser.Scene {
     }
 
     this.lives -= damage;
-    this.playerInvulnerableUntil = this.time.now + 900;
+    this.playerInvulnerableUntil = this.time.now + RUN_GUN_RESPAWN_INVULNERABLE_MS;
     this.player.setTint(0xffef80);
+    this.player.setVelocityX(-this.facing * 130);
     this.cameras.main.shake(110, 0.003);
     playSfx(this, SFX_HIT_LIGHT_KEY, { volume: 0.36, rate: 0.82 });
     this.time.delayedCall(130, () => this.player?.clearTint());
@@ -937,23 +839,90 @@ export class RunGunScene extends Phaser.Scene {
     }
 
     this.lives -= 1;
-    this.player.setPosition(Math.max(120, this.cameras.main.scrollX + 120), 260);
-    this.player.setVelocity(0, 0);
-    this.cameras.main.shake(130, 0.003);
     if (this.lives <= 0) {
       this.playDeathSequence();
+      return;
+    }
+
+    this.respawnPlayerAtCheckpoint();
+    this.cameras.main.shake(130, 0.003);
+  }
+
+  private updateCheckpointProgress(): void {
+    if (!this.player) {
+      return;
+    }
+
+    for (const checkpointX of RUN_GUN_CHECKPOINTS) {
+      if (this.player.x >= checkpointX && checkpointX > this.checkpointX) {
+        this.checkpointX = checkpointX;
+        this.announceCheckpoint(checkpointX);
+      }
     }
   }
 
+  private announceCheckpoint(checkpointX: number): void {
+    const checkpointNumber = RUN_GUN_CHECKPOINTS.indexOf(checkpointX as typeof RUN_GUN_CHECKPOINTS[number]) + 1;
+    this.hud?.showCheckpoint(checkpointNumber);
+    playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.26, rate: 1.28 });
+  }
+
+  private respawnPlayerAtCheckpoint(): void {
+    if (!this.player) {
+      return;
+    }
+
+    this.enemyBullets.forEach((bullet) => bullet.body.destroy());
+    this.enemyBullets = [];
+    this.player.setPosition(this.checkpointX, 260);
+    this.player.setVelocity(0, 0);
+    this.playerInvulnerableUntil = this.time.now + RUN_GUN_RESPAWN_INVULNERABLE_MS;
+    this.jumpBufferedUntil = 0;
+    this.lastGroundedAt = 0;
+    this.cameras.main.centerOn(Math.max(GAME_WIDTH / 2, this.checkpointX + 190), GAME_HEIGHT / 2);
+  }
+
   private updateHud(): void {
-    const metersToExit = Math.max(0, Math.ceil((RUN_GUN_GOAL_X - (this.player?.x ?? 0)) / 100));
-    this.statusText?.setText(
-      this.stageCleared ? `STAGE CLEAR   LIVES ${this.lives}` : `ENEMIES ${this.enemies.length}   EXIT ${metersToExit}   LIVES ${this.lives}`,
-    );
+    this.hud?.update({
+      playerX: this.player?.x ?? 0,
+      enemyCount: this.enemies.length,
+      lives: this.lives,
+      checkpointNumber: this.getCheckpointNumber(),
+      stageCleared: this.stageCleared,
+      isPaused: this.isPaused,
+    });
   }
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.touchControls?.updateLayout(gameSize.width, gameSize.height);
+  }
+
+  private handlePauseInput(): void {
+    const gamepadInput = this.gamepadControls?.getInput();
+    if (this.justDown(this.keys?.ESC) || this.justDown(this.keys?.P) || gamepadInput?.pause || gamepadInput?.confirm || gamepadInput?.cancel) {
+      this.setRunGunPause(false);
+    }
+  }
+
+  private setRunGunPause(paused: boolean): void {
+    if (this.endingSequenceActive || this.stageCleared || this.isPaused === paused) {
+      return;
+    }
+
+    this.isPaused = paused;
+    this.hud?.setPauseVisible(paused);
+    if (paused) {
+      this.player?.setVelocity(0, 0);
+      this.physics.world.pause();
+    } else {
+      this.physics.world.resume();
+    }
+    playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.24, rate: paused ? 0.9 : 1.18 });
+  }
+
+  private getCheckpointNumber(): number {
+    const checkpointIndex = RUN_GUN_CHECKPOINTS.findIndex((checkpointX) => checkpointX === this.checkpointX);
+    return checkpointIndex >= 0 ? checkpointIndex + 1 : 0;
   }
 
   private getAimFrame(direction: Phaser.Math.Vector2): number {
@@ -967,89 +936,6 @@ export class RunGunScene extends Phaser.Scene {
     if (Math.abs(snapped - 3 * Math.PI / 4) < epsilon) return 5;
     if (Math.abs(snapped - Math.PI / 2) < epsilon) return 6;
     return 7;
-  }
-
-  private spawnSpark(x: number, y: number): void {
-    playSfx(this, SFX_HIT_LIGHT_KEY, { volume: 0.26, rate: 1.3 });
-    const spark = this.add.ellipse(x, y, 28, 18, 0xffd166, 0.92).setDepth(2300);
-    spark.setStrokeStyle(2, 0xffffff, 0.88);
-    this.tweens.add({
-      targets: spark,
-      scaleX: 1.5,
-      scaleY: 1.5,
-      alpha: 0,
-      duration: 130,
-      ease: 'Sine.easeOut',
-      onComplete: () => spark.destroy(),
-    });
-  }
-
-  private spawnExplosion(x: number, y: number, scale = 1): void {
-    playSfx(this, SFX_ENEMY_DEFEAT_KEY, { volume: 0.34, rate: Phaser.Math.FloatBetween(1.05, 1.18) });
-
-    const flash = this.add.circle(x, y, 34 * scale, 0xfff4a3, 0.95).setDepth(2350);
-    const core = this.add.circle(x, y, 18 * scale, 0xff4d1f, 0.9).setDepth(2360);
-    const ring = this.add.circle(x, y, 28 * scale, 0xffd166, 0).setDepth(2340);
-    ring.setStrokeStyle(5 * scale, 0xfff4a3, 0.9);
-
-    this.tweens.add({
-      targets: flash,
-      scale: 2.45,
-      alpha: 0,
-      duration: 180,
-      ease: 'Quad.easeOut',
-      onComplete: () => flash.destroy(),
-    });
-    this.tweens.add({
-      targets: core,
-      scale: 1.75,
-      alpha: 0,
-      duration: 230,
-      ease: 'Sine.easeOut',
-      onComplete: () => core.destroy(),
-    });
-    this.tweens.add({
-      targets: ring,
-      scale: 3.1,
-      alpha: 0,
-      duration: 300,
-      ease: 'Cubic.easeOut',
-      onComplete: () => ring.destroy(),
-    });
-
-    for (let index = 0; index < 10; index += 1) {
-      const angle = (Math.PI * 2 * index) / 10 + Phaser.Math.FloatBetween(-0.22, 0.22);
-      const distance = Phaser.Math.Between(36, 94) * scale;
-      const smoke = this.add.circle(x, y, Phaser.Math.Between(9, 18) * scale, 0x485160, 0.58).setDepth(2220);
-      this.tweens.add({
-        targets: smoke,
-        x: x + Math.cos(angle) * distance,
-        y: y + Math.sin(angle) * distance * 0.58,
-        scale: Phaser.Math.FloatBetween(1.4, 2.2),
-        alpha: 0,
-        duration: Phaser.Math.Between(430, 620),
-        ease: 'Sine.easeOut',
-        onComplete: () => smoke.destroy(),
-      });
-    }
-
-    for (let index = 0; index < 16; index += 1) {
-      const shard = this.add.rectangle(x, y, Phaser.Math.Between(5, 13) * scale, Phaser.Math.Between(3, 8) * scale, 0xffd166, 1).setDepth(2320);
-      const angle = Phaser.Math.FloatBetween(-Math.PI, Math.PI);
-      const distance = Phaser.Math.Between(46, 136) * scale;
-      this.tweens.add({
-        targets: shard,
-        x: x + Math.cos(angle) * distance,
-        y: y + Math.sin(angle) * distance * 0.68,
-        alpha: 0,
-        angle: Phaser.Math.Between(-260, 260),
-        duration: Phaser.Math.Between(300, 520),
-        ease: 'Sine.easeOut',
-        onComplete: () => shard.destroy(),
-      });
-    }
-
-    this.cameras.main.shake(120, 0.0032 * scale);
   }
 
   private playDeathSequence(): void {
@@ -1085,7 +971,18 @@ export class RunGunScene extends Phaser.Scene {
   }
 
   private returnToTitle(): void {
-    this.scene.stop('UIScene');
-    this.scene.start('MainMenuScene');
+    if (this.isReturningToTitle) {
+      return;
+    }
+
+    this.isReturningToTitle = true;
+    this.isPaused = false;
+    this.physics.world.resume();
+    this.stopLevelMusic();
+    this.cameras.main.fadeOut(180, 7, 9, 13);
+    this.time.delayedCall(190, () => {
+      this.scene.stop('UIScene');
+      this.scene.start('MainMenuScene');
+    });
   }
 }

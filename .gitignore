@@ -6,3 +6,5 @@ dist/
 .env.*
 output/
 humandropbox/
+media-package/
+neon-brawler-social-media-package.zip

@@ -1,6 +1,6 @@
-# Neon Brawler Prototype
+# Neon Brawler
 
-A browser-playable, mobile-friendly Phaser prototype with a 2.5D brawler stage and a side-scrolling run-and-gun test stage. The project builds to static files in `dist/` and is ready to host on GitHub Pages or any static web host.
+A browser-playable, mobile-friendly Phaser action demo with a 2.5D brawler stage and a side-scrolling run-and-gun stage. The project builds to static files in `dist/` and is ready to host on GitHub Pages or any static web host.
 
 ## Tech Stack
 
@@ -30,6 +30,13 @@ npm run preview
 The production build is static. After `npm run build`, upload the contents of `dist/` to a static host.
 
 This repo includes `.github/workflows/deploy-pages.yml`, which builds and deploys `dist/` to GitHub Pages on pushes to `main` or from a manual workflow run.
+
+Live demo:
+
+- Main demo: https://perfectz.github.io/PhaserGameDemo/?demo=1
+- Direct shooter demo: https://perfectz.github.io/PhaserGameDemo/?demo=1&mode=shooter
+
+For LinkedIn sharing, the page includes Open Graph metadata and a 1200x627 preview image at `public/linkedin-card.png`.
 
 ## Controls
 
@@ -65,7 +72,7 @@ src/
 - Production loading screen for slower online connections
 - Static-host friendly Vite build with relative asset URLs
 - GitHub Pages deployment workflow
-- Share metadata and preview image for posted links
+- Share metadata and LinkedIn-sized preview image for posted links
 - 2.5D street movement with lane constraints
 - Y-based render depth for characters
 - Player with health, facing, state tracking, movement, damage, and multiple attacks
@@ -77,8 +84,10 @@ src/
 - Punch, kick, jump, and special key/button actions
 - Pause menu with current controls
 - Game over screen with restart button
+- Local best-time tracking for both demo stages
 - Wave-based brawler stage with stage clear return to title
 - Run-and-gun stage with exit clear return to title
+- Shooter checkpoints, progress HUD, pause menu, enemy health bars, and shot telegraphs
 - Camera follow in a wider scrolling world
 - HUD with player health, enemy count, player state, level, wave, and stage clear text
 

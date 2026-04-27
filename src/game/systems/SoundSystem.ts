@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { readStorageValue, writeStorageValue } from './StorageSystem';
 
 interface SfxOptions {
   volume?: number;
@@ -22,20 +23,12 @@ export function playSfx(scene: Phaser.Scene, key: string, options: SfxOptions = 
 }
 
 export function isSoundMuted(): boolean {
-  try {
-    return window.localStorage.getItem(SOUND_MUTED_STORAGE_KEY) === 'true';
-  } catch {
-    return false;
-  }
+  return readStorageValue(SOUND_MUTED_STORAGE_KEY) === 'true';
 }
 
 export function setSoundMuted(scene: Phaser.Scene, muted: boolean): void {
   scene.sound.setMute(muted);
-  try {
-    window.localStorage.setItem(SOUND_MUTED_STORAGE_KEY, String(muted));
-  } catch {
-    // Local storage can be unavailable in some browser privacy modes; runtime mute still applies.
-  }
+  writeStorageValue(SOUND_MUTED_STORAGE_KEY, String(muted));
 }
 
 export function applySoundPreference(scene: Phaser.Scene): boolean {

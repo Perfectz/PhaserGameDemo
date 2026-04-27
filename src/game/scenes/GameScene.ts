@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { Enemy } from '../entities/Enemy';
-import { backgrounds } from '../data/backgrounds';
+import { brawlerAssets } from '../data/assets';
 import { destructibleProps } from '../data/destructibleProps';
 import { DestructibleProp } from '../entities/DestructibleProp';
 import { Pickup } from '../entities/Pickup';
@@ -11,32 +11,27 @@ import { CombatSystem } from '../systems/CombatSystem';
 import { EnemyAISystem } from '../systems/EnemyAISystem';
 import { EncounterFlowSystem, EncounterBounds } from '../systems/EncounterFlowSystem';
 import { GamepadControls } from '../systems/GamepadControls';
+import { areAssetsLoaded, loadAssetsThenStart } from '../systems/AssetLoaderSystem';
+import { formatRunTime, recordBestTime } from '../systems/DemoProgressSystem';
 import { ParallaxBackgroundSystem } from '../systems/ParallaxBackgroundSystem';
 import { SpawnSystem } from '../systems/SpawnSystem';
+import { StageRendererSystem } from '../systems/StageRendererSystem';
 import { TouchControls } from '../systems/TouchControls';
 import { playFullscreenVideoOverlay } from '../systems/VideoOverlaySystem';
 import {
-  CYBER_STAGE_SHEET_KEY,
   GAME_HEIGHT,
   GAME_WIDTH,
   LEVEL_1_MUSIC_KEY,
   PLAYER_SHOT_COOLDOWN_MS,
   SFX_JUMP_KEY,
-  SETPIECE_NEON_GATE_KEY,
-  SETPIECE_OVERPASS_SIGN_KEY,
-  SETPIECE_RAISED_WALKWAY_KEY,
-  SETPIECE_STAIRS_RAMP_KEY,
-  SETPIECE_STREET_KIOSK_KEY,
-  SETPIECE_SUBWAY_ENTRANCE_KEY,
   SFX_PICKUP_KEY,
   STAGE_START_GRACE_MS,
   WALKABLE_BOTTOM,
   WALKABLE_LEFT,
   WALKABLE_RIGHT,
   WALKABLE_TOP,
-  WORLD_WIDTH,
 } from '../utils/constants';
-import { AttackInput, LevelDefinition, MovementInput, StageSetpiecePlacement, WaveDefinition } from '../utils/types';
+import { AttackInput, LevelDefinition, MovementInput, WaveDefinition } from '../utils/types';
 import { playLoopingMusic, playSfx, stopMusic } from '../systems/SoundSystem';
 import { HudState } from './UIScene';
 
@@ -68,13 +63,19 @@ export class GameScene extends Phaser.Scene {
   private propBreakCount = 0;
   private guaranteedPickupsSpawned = 0;
   private returnToTitleScheduled = false;
-  private levelMusic?: Phaser.Sound.BaseSound;
+  private isReturningToTitle = false;
+  private levelStartedAt = 0;
+  private stageIntro?: Phaser.GameObjects.Container;
 
   constructor() {
     super('GameScene');
   }
 
   create(): void {
+    if (this.loadBrawlerAssets()) {
+      return;
+    }
+
     this.enemies = [];
     this.stageProps = [];
     this.pickups = [];
@@ -87,14 +88,19 @@ export class GameScene extends Phaser.Scene {
     this.propBreakCount = 0;
     this.guaranteedPickupsSpawned = 0;
     this.returnToTitleScheduled = false;
+    this.isReturningToTitle = false;
+    this.levelStartedAt = this.time.now;
+    if (!this.scene.isActive('UIScene')) {
+      this.scene.launch('UIScene');
+    }
     this.scene.get('UIScene').events.emit('pause:changed', false);
     this.scene.get('UIScene').events.emit('game-over:changed', false);
-    this.levelMusic = playLoopingMusic(this, LEVEL_1_MUSIC_KEY, 0.34);
+    playLoopingMusic(this, LEVEL_1_MUSIC_KEY, 0.34);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.stopLevelMusic());
 
     this.spawner = new SpawnSystem(this, this.enemies);
     this.encounterFlow = new EncounterFlowSystem(this.spawner.level);
-    this.createWorld(this.spawner.level);
+    this.parallaxBackground = new StageRendererSystem(this).createWorld(this.spawner.level);
     this.stageProps = this.createDestructibleProps(this.spawner.level);
     this.player = new Player(this, 180, 390);
     this.combat = new CombatSystem(this);
@@ -107,19 +113,50 @@ export class GameScene extends Phaser.Scene {
     this.keys = this.input.keyboard?.addKeys('W,A,S,D,E,J,K,L,I,O,R,P,ESC,SPACE,SHIFT') as Record<string, Phaser.Input.Keyboard.Key>;
     this.events.off('pause:set');
     this.events.off('restart:requested');
+    this.events.off('title:requested');
     this.events.off('pickup:spawn');
     this.events.off('wave:started');
     this.events.off('stage:cleared');
     this.events.on('pause:set', (paused: boolean) => this.togglePause(paused));
     this.events.on('restart:requested', () => this.restartRun());
+    this.events.on('title:requested', () => this.returnToTitle());
     this.events.on('pickup:spawn', (x: number, y: number) => this.spawnPickup(x, y));
     this.events.on('wave:started', (waveIndex: number, wave: WaveDefinition) => this.handleWaveStarted(waveIndex, wave));
     this.events.on('stage:cleared', () => this.handleStageCleared());
     this.spawner.start();
     this.updateEncounterFlow();
+    this.showStageIntro();
+    this.cameras.main.fadeIn(180, 7, 9, 13);
 
     this.scale.off('resize', this.handleResize, this);
     this.scale.on('resize', this.handleResize, this);
+  }
+
+  private loadBrawlerAssets(): boolean {
+    if (areAssetsLoaded(this, brawlerAssets)) {
+      return false;
+    }
+
+    const loadingText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2, 'LOADING BRAWLER 0%', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '18px',
+      color: '#ffd166',
+      stroke: '#07090d',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setDepth(30000);
+
+    return loadAssetsThenStart(
+      this,
+      brawlerAssets,
+      () => {
+        this.load.off(Phaser.Loader.Events.PROGRESS);
+        this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR);
+        loadingText.destroy();
+        this.scene.restart();
+      },
+      (progress) => loadingText.setText(`LOADING BRAWLER ${Math.round(progress * 100)}%`),
+      () => loadingText.setText('LOADING BRAWLER... RETRY NEEDED'),
+    );
   }
 
   update(_time: number, delta: number): void {
@@ -216,8 +253,11 @@ export class GameScene extends Phaser.Scene {
 
     this.returnToTitleScheduled = true;
     this.isPaused = true;
+    const elapsedMs = this.time.now - this.levelStartedAt;
+    const isBestTime = recordBestTime('brawler', elapsedMs);
     this.scene.get('UIScene').events.emit('pause:changed', false);
     this.scene.get('UIScene').events.emit('stage:cleared');
+    this.showRunResult('NEON STREET CLEAR', `${formatRunTime(elapsedMs)}${isBestTime ? '  NEW BEST' : ''}`);
     this.stopLevelMusic();
     this.time.delayedCall(650, () => {
       playFullscreenVideoOverlay(this, {
@@ -228,8 +268,86 @@ export class GameScene extends Phaser.Scene {
   }
 
   private returnToTitle(): void {
-    this.scene.stop('UIScene');
-    this.scene.start('MainMenuScene');
+    if (this.isReturningToTitle) {
+      return;
+    }
+
+    this.isReturningToTitle = true;
+    this.stopLevelMusic();
+    this.cameras.main.fadeOut(180, 7, 9, 13);
+    this.time.delayedCall(190, () => {
+      this.scene.stop('UIScene');
+      this.scene.start('MainMenuScene');
+    });
+  }
+
+  private showStageIntro(): void {
+    const shade = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x07090d, 0.2)
+      .setScrollFactor(0);
+    const title = this.add.text(GAME_WIDTH / 2, 178, 'LEVEL 1', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '28px',
+      color: '#8ecae6',
+      stroke: '#07090d',
+      strokeThickness: 6,
+    }).setOrigin(0.5).setScrollFactor(0);
+    const subtitle = this.add.text(GAME_WIDTH / 2, 222, 'NEON STREET', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '48px',
+      color: '#ffd166',
+      stroke: '#07090d',
+      strokeThickness: 8,
+    }).setOrigin(0.5).setScrollFactor(0);
+    const objective = this.add.text(GAME_WIDTH / 2, 278, 'CLEAR THE WAVES', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '16px',
+      color: '#f8fbff',
+      stroke: '#07090d',
+      strokeThickness: 4,
+    }).setOrigin(0.5).setScrollFactor(0);
+
+    this.stageIntro = this.add.container(0, 0, [shade, title, subtitle, objective])
+      .setDepth(19000)
+      .setAlpha(0);
+    this.tweens.add({
+      targets: this.stageIntro,
+      alpha: 1,
+      duration: 220,
+      ease: 'Sine.easeOut',
+      yoyo: true,
+      hold: 980,
+      onComplete: () => this.stageIntro?.destroy(),
+    });
+  }
+
+  private showRunResult(titleText: string, subtitleText: string): void {
+    const title = this.add.text(GAME_WIDTH / 2, 98, titleText, {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '20px',
+      color: '#f8fbff',
+      stroke: '#07090d',
+      strokeThickness: 5,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(19020);
+    const subtitle = this.add.text(GAME_WIDTH / 2, 128, subtitleText, {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '15px',
+      color: '#8ecae6',
+      stroke: '#07090d',
+      strokeThickness: 4,
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(19020);
+
+    this.tweens.add({
+      targets: [title, subtitle],
+      alpha: 0,
+      y: '-=18',
+      delay: 1600,
+      duration: 420,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        title.destroy();
+        subtitle.destroy();
+      },
+    });
   }
 
   private getKeyboardMovement(): MovementInput {
@@ -462,253 +580,11 @@ export class GameScene extends Phaser.Scene {
     return boss ? boss.health / boss.maxHealth : undefined;
   }
 
-  private createWorld(level: LevelDefinition): void {
-    this.cameras.main.setBackgroundColor('#111318');
-    const background = backgrounds[level.backgroundId];
-    this.parallaxBackground = background ? new ParallaxBackgroundSystem(this, background) : undefined;
-
-    this.add.rectangle(0, 0, WORLD_WIDTH, GAME_HEIGHT, 0x121620).setOrigin(0).setDepth(-45);
-    this.renderCityBackdrops();
-
-    const street = this.add.graphics();
-    street.setDepth(-10);
-    const laneHeight = (WALKABLE_BOTTOM - WALKABLE_TOP) / 5;
-    const laneColors = [0x272c35, 0x2b303a, 0x303540, 0x353a45, 0x3a404b];
-    laneColors.forEach((color, index) => {
-      street.fillStyle(color, 1);
-      street.fillRect(0, WALKABLE_TOP + laneHeight * index, WORLD_WIDTH, laneHeight + 1);
-    });
-
-    street.lineStyle(5, 0x6d788b, 0.95);
-    street.lineBetween(0, WALKABLE_TOP, WORLD_WIDTH, WALKABLE_TOP);
-    street.lineStyle(8, 0x1d222c, 1);
-    street.lineBetween(0, WALKABLE_BOTTOM, WORLD_WIDTH, WALKABLE_BOTTOM);
-
-    // Long diagonal seams and lane stripes make the flat canvas read as a 3/4 street.
-    street.lineStyle(2, 0x151923, 0.42);
-    for (let x = -260; x < WORLD_WIDTH + 260; x += 220) {
-      street.lineBetween(x, WALKABLE_TOP, x + 120, WALKABLE_BOTTOM);
-    }
-
-    street.lineStyle(2, 0x8ecae6, 0.28);
-    for (let y = WALKABLE_TOP + laneHeight; y < WALKABLE_BOTTOM; y += laneHeight) {
-      street.lineBetween(0, y, WORLD_WIDTH, y);
-    }
-
-    for (let x = 0; x < WORLD_WIDTH; x += 180) {
-      const stripeY = WALKABLE_TOP + laneHeight * 2.6;
-      const stripe = this.add.rectangle(x + 32, stripeY, 92, 5, 0xf4d35e, 0.5).setOrigin(0);
-      stripe.setDepth(-5);
-      stripe.setAngle(1.5);
-    }
-
-    this.renderRoadTexture();
-    this.renderStageSetpieces(level);
-
-    this.add.rectangle(WALKABLE_LEFT, WALKABLE_TOP, 4, WALKABLE_BOTTOM - WALKABLE_TOP, 0x8ecae6, 0.42).setOrigin(0).setDepth(-4);
-    this.add.rectangle(WALKABLE_RIGHT, WALKABLE_TOP, 4, WALKABLE_BOTTOM - WALKABLE_TOP, 0x8ecae6, 0.42).setOrigin(0).setDepth(-4);
-
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, GAME_HEIGHT);
-  }
-
   private createDestructibleProps(level: LevelDefinition): DestructibleProp[] {
     return level.destructibleProps.map((placement) => {
       const definition = destructibleProps[placement.typeId];
       return new DestructibleProp(this, definition, placement.x, placement.y);
     });
-  }
-
-  private renderCityBackdrops(): void {
-    const facades = [
-      { frame: 'building-shop-left', x: 20, y: WALKABLE_TOP + 8, height: 210 },
-      { frame: 'building-shop-wide', x: 360, y: WALKABLE_TOP + 10, height: 226 },
-      { frame: 'building-shop-left', x: 930, y: WALKABLE_TOP + 8, height: 202 },
-      { frame: 'building-shop-wide', x: 1420, y: WALKABLE_TOP + 12, height: 232 },
-      { frame: 'building-shop-left', x: 2050, y: WALKABLE_TOP + 8, height: 208 },
-      { frame: 'building-shop-wide', x: 2540, y: WALKABLE_TOP + 12, height: 226 },
-    ];
-
-    facades.forEach(({ frame, x, y, height }, index) => {
-      const image = this.addStageAsset(frame, x, y, undefined, height, -26, index % 2 === 0 ? 0.92 : 0.84);
-      image.setTint(index % 2 === 0 ? 0xffffff : 0xdde8ff);
-    });
-
-    [
-      { x: 315, y: WALKABLE_TOP + 18, height: 158 },
-      { x: 1265, y: WALKABLE_TOP + 6, height: 168 },
-      { x: 2375, y: WALKABLE_TOP + 18, height: 150 },
-      { x: 2925, y: WALKABLE_TOP + 8, height: 170 },
-    ].forEach((placement) => {
-      this.addStageAsset('neon-column', placement.x, placement.y, undefined, placement.height, -22, 0.94);
-    });
-  }
-
-  private renderRoadTexture(): void {
-    this.addStageAsset('road-start', 0, WALKABLE_BOTTOM + 4, 360, 74, -8, 0.72);
-    for (let x = 330; x < WORLD_WIDTH - 280; x += 700) {
-      this.addStageAsset('road-long', x, WALKABLE_BOTTOM + 4, 720, 70, -8, 0.62);
-    }
-    this.addStageAsset('road-end', WORLD_WIDTH - 150, WALKABLE_BOTTOM + 4, 140, 72, -8, 0.72);
-  }
-
-  private renderStageSetpieces(level: LevelDefinition): void {
-    level.stageSetpieces.forEach((setpiece) => {
-      switch (setpiece.type) {
-        case 'raisedWalkway':
-          this.drawRaisedWalkway(setpiece);
-          break;
-        case 'ramp':
-          this.drawRamp(setpiece);
-          break;
-        case 'stairs':
-          this.drawStairs(setpiece);
-          break;
-        case 'ladder':
-          this.drawLadder(setpiece);
-          break;
-        case 'overpass':
-          this.drawOverpass(setpiece);
-          break;
-        case 'neonGate':
-          this.drawNeonGate(setpiece);
-          break;
-        case 'streetKiosk':
-          this.drawStreetKiosk(setpiece);
-          break;
-        case 'subwayEntrance':
-          this.drawSubwayEntrance(setpiece);
-          break;
-        default:
-          break;
-      }
-    });
-  }
-
-  private drawRaisedWalkway(setpiece: StageSetpiecePlacement): void {
-    const width = setpiece.width ?? 420;
-    const height = setpiece.height ?? 138;
-    this.addStageShadow(setpiece.x + 28, setpiece.y + 2, width - 56, 26, -9);
-    this.addSetpieceImage(SETPIECE_RAISED_WALKWAY_KEY, setpiece.x, setpiece.y, width, height, -7, 0.98);
-    this.addStageSign(setpiece, setpiece.x + width * 0.5, setpiece.y - height + 30);
-  }
-
-  private drawRamp(setpiece: StageSetpiecePlacement): void {
-    const width = setpiece.width ?? 280;
-    const height = setpiece.height ?? 164;
-    this.addStageShadow(setpiece.x + 14, setpiece.y + 2, width - 28, 26, -9);
-    this.addSetpieceImage(SETPIECE_STAIRS_RAMP_KEY, setpiece.x, setpiece.y, width, height, -6, 0.98);
-  }
-
-  private drawStairs(setpiece: StageSetpiecePlacement): void {
-    const width = setpiece.width ?? 300;
-    const height = setpiece.height ?? 170;
-    this.addStageShadow(setpiece.x + 18, setpiece.y + 2, width - 36, 28, -9);
-    this.addSetpieceImage(SETPIECE_STAIRS_RAMP_KEY, setpiece.x, setpiece.y, width, height, -6, 0.98);
-  }
-
-  private drawLadder(setpiece: StageSetpiecePlacement): void {
-    const width = setpiece.width ?? 48;
-    const height = setpiece.height ?? 136;
-    const frame = height > 150 ? 'ladder-caged' : 'ladder-straight';
-    this.addStageAsset(frame, setpiece.x, setpiece.y + height, width, height, -3, 1);
-    this.addStageSign(setpiece, setpiece.x + width * 0.5, setpiece.y - 12);
-  }
-
-  private drawOverpass(setpiece: StageSetpiecePlacement): void {
-    const width = setpiece.width ?? 430;
-    const height = setpiece.height ?? 190;
-    this.addStageShadow(setpiece.x + 28, setpiece.y + 2, width - 56, 34, -10);
-    this.addSetpieceImage(SETPIECE_OVERPASS_SIGN_KEY, setpiece.x, setpiece.y, width, height, -5, 0.98);
-    this.addStageSign(setpiece, setpiece.x + width * 0.5, setpiece.y - height + 36);
-  }
-
-  private drawNeonGate(setpiece: StageSetpiecePlacement): void {
-    const height = setpiece.height ?? 176;
-    const width = setpiece.width ?? 246;
-    this.addStageShadow(setpiece.x + 12, setpiece.y + 2, width - 24, 30, -9);
-    this.addSetpieceImage(SETPIECE_NEON_GATE_KEY, setpiece.x, setpiece.y, width, height, -4, 0.98);
-    this.addStageSign(setpiece, setpiece.x + width * 0.5, setpiece.y - height + 42);
-  }
-
-  private drawStreetKiosk(setpiece: StageSetpiecePlacement): void {
-    const height = setpiece.height ?? 188;
-    const width = setpiece.width ?? 292;
-    this.addStageShadow(setpiece.x + 24, setpiece.y + 3, width - 48, 30, -8);
-    this.addSetpieceImage(SETPIECE_STREET_KIOSK_KEY, setpiece.x, setpiece.y, width, height, -5, 0.98);
-  }
-
-  private drawSubwayEntrance(setpiece: StageSetpiecePlacement): void {
-    const height = setpiece.height ?? 170;
-    const width = setpiece.width ?? 250;
-    this.addStageShadow(setpiece.x + 18, setpiece.y + 3, width - 36, 28, -8);
-    this.addSetpieceImage(SETPIECE_SUBWAY_ENTRANCE_KEY, setpiece.x, setpiece.y, width, height, -5, 0.98);
-  }
-
-  private addStageAsset(
-    frame: string,
-    x: number,
-    y: number,
-    width?: number,
-    height?: number,
-    depth = -6,
-    alpha = 1,
-  ): Phaser.GameObjects.Image {
-    const image = this.add.image(x, y, CYBER_STAGE_SHEET_KEY, frame)
-      .setOrigin(0, 1)
-      .setDepth(depth)
-      .setAlpha(alpha);
-
-    if (width && height) {
-      image.setDisplaySize(width, height);
-    } else if (height) {
-      const source = this.textures.get(CYBER_STAGE_SHEET_KEY).get(frame);
-      image.setDisplaySize(source.width * (height / source.height), height);
-    }
-
-    return image;
-  }
-
-  private addSetpieceImage(
-    textureKey: string,
-    x: number,
-    y: number,
-    width?: number,
-    height?: number,
-    depth = -6,
-    alpha = 1,
-  ): Phaser.GameObjects.Image {
-    const image = this.add.image(x, y, textureKey)
-      .setOrigin(0, 1)
-      .setDepth(depth)
-      .setAlpha(alpha);
-
-    if (width && height) {
-      image.setDisplaySize(width, height);
-    } else if (height) {
-      const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
-      image.setDisplaySize(source.width * (height / source.height), height);
-    }
-
-    return image;
-  }
-
-  private addStageShadow(x: number, y: number, width: number, height: number, depth: number): void {
-    this.add.ellipse(x + width * 0.5, y, width, height, 0x05070b, 0.34)
-      .setDepth(depth);
-  }
-
-  private addStageSign(setpiece: StageSetpiecePlacement, x: number, y: number): void {
-    if (!setpiece.label) {
-      return;
-    }
-
-    this.add.text(x, y, setpiece.label, {
-      fontFamily: 'Arial Black, Arial, sans-serif',
-      fontSize: '11px',
-      color: '#f8fbff',
-      stroke: '#07090d',
-      strokeThickness: 3,
-    }).setOrigin(0.5).setDepth(-1);
   }
 
   private spawnPickup(x: number, y: number, force = false): void {

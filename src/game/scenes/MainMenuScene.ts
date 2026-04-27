@@ -7,6 +7,8 @@ import {
   TITLE_SCREEN_MUSIC_KEY,
 } from '../utils/constants';
 import { GamepadControls } from '../systems/GamepadControls';
+import { getBestTimeLabel } from '../systems/DemoProgressSystem';
+import { readStorageValue, writeStorageValue } from '../systems/StorageSystem';
 import {
   applySoundPreference,
   isSoundMuted,
@@ -36,12 +38,12 @@ export class MainMenuScene extends Phaser.Scene {
   private menuOptions: MenuOption[] = [];
   private selectedIndex = 0;
   private nextGamepadNavAt = 0;
-  private titleMusic?: Phaser.Sound.BaseSound;
   private soundTogglePanel?: Phaser.GameObjects.Rectangle;
   private soundToggleTrack?: Phaser.GameObjects.Rectangle;
   private soundToggleKnob?: Phaser.GameObjects.Rectangle;
   private soundToggleText?: Phaser.GameObjects.Text;
   private introComplete = false;
+  private isStarting = false;
 
   constructor() {
     super('MainMenuScene');
@@ -52,6 +54,7 @@ export class MainMenuScene extends Phaser.Scene {
     this.selectedIndex = 0;
     this.nextGamepadNavAt = 0;
     this.introComplete = false;
+    this.isStarting = false;
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x07090d, 1).setOrigin(0);
     applySoundPreference(this);
     this.startTitleMusic();
@@ -64,6 +67,7 @@ export class MainMenuScene extends Phaser.Scene {
     }
 
     this.createTitleMenu();
+    this.startRequestedModeFromUrl();
   }
 
   update(): void {
@@ -96,21 +100,31 @@ export class MainMenuScene extends Phaser.Scene {
       .setDisplaySize(GAME_WIDTH, GAME_HEIGHT);
     this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x07090d, 0.34).setOrigin(0);
     this.add.rectangle(0, 0, 520, GAME_HEIGHT, 0x07090d, 0.36).setOrigin(0);
+    this.createTitleAtmosphere();
 
-    this.add.text(70, 112, 'NEON BRAWLER', {
+    const title = this.add.text(70, 112, 'NEON BRAWLER', {
       fontFamily: 'Arial Black, Arial, sans-serif',
       fontSize: '58px',
       color: '#f1f6ff',
       stroke: '#07090d',
       strokeThickness: 8,
     }).setOrigin(0, 0.5);
-    this.add.text(74, 170, 'CYBER STREET PROTOTYPE', {
+    const titleAccent = this.add.rectangle(76, 150, 344, 4, 0x8ecae6, 0.82).setOrigin(0, 0.5);
+    this.tweens.add({
+      targets: [title, titleAccent],
+      alpha: 0.84,
+      duration: 1600,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+    this.add.text(74, 170, 'PLAYABLE WEB DEMO', {
       fontFamily: 'Arial Black, Arial, sans-serif',
       fontSize: '18px',
       color: '#ffd166',
       letterSpacing: 1,
     }).setOrigin(0, 0.5);
-    this.add.text(74, 214, 'Fight through neon streets, or test the new side-scrolling run-and-gun stage.', {
+    this.add.text(74, 214, 'Fight through neon streets, then jump into a side-scrolling run-and-gun gauntlet.', {
       fontFamily: 'Arial, sans-serif',
       fontSize: '18px',
       color: '#d7e1ee',
@@ -126,8 +140,8 @@ export class MainMenuScene extends Phaser.Scene {
     }).setOrigin(0, 0.5);
 
     this.menuOptions = [
-      this.createMenuOption(76, 338, 'BRAWLER', 'Level 1 - 2.5D street fight', 'brawler', 0x8ecae6),
-      this.createMenuOption(76, 414, 'SHOOTER', 'Run-gun test stage', 'shooter', 0xffd166),
+      this.createMenuOption(76, 338, 'BRAWLER', `Level 1 - Neon street fight  ${getBestTimeLabel('brawler')}`, 'brawler', 0x8ecae6),
+      this.createMenuOption(76, 414, 'SHOOTER', `Level 2 - Run-gun gauntlet  ${getBestTimeLabel('shooter')}`, 'shooter', 0xffd166),
     ];
     this.selectOption(0, false);
 
@@ -145,6 +159,31 @@ export class MainMenuScene extends Phaser.Scene {
 
     this.gamepadControls = new GamepadControls(this);
     this.bindKeyboardNavigation();
+  }
+
+  private createTitleAtmosphere(): void {
+    for (let index = 0; index < 9; index += 1) {
+      const y = 72 + index * 45;
+      const rail = this.add.rectangle(28, y, 70 + (index % 3) * 28, 2, index % 2 === 0 ? 0x8ecae6 : 0xffd166, 0.16)
+        .setOrigin(0, 0.5);
+      this.tweens.add({
+        targets: rail,
+        x: 36,
+        alpha: 0.38,
+        duration: 900 + index * 90,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+    }
+
+    this.add.text(74, 72, 'PUBLIC DEMO BUILD', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '11px',
+      color: '#8ecae6',
+      stroke: '#07090d',
+      strokeThickness: 3,
+    }).setOrigin(0, 0.5).setAlpha(0.86);
   }
 
   private playIntroSequence(): void {
@@ -205,28 +244,30 @@ export class MainMenuScene extends Phaser.Scene {
       return true;
     }
 
-    if (new URLSearchParams(window.location.search).get('skipIntro') === '1') {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('skipIntro') === '1' || params.get('demo') === '1') {
       this.persistIntroVideoPlayed();
       return true;
     }
 
-    try {
-      return window.localStorage.getItem(INTRO_VIDEO_PLAYED_STORAGE_KEY) === 'true';
-    } catch {
-      return false;
-    }
+    return readStorageValue(INTRO_VIDEO_PLAYED_STORAGE_KEY) === 'true';
   }
 
   private persistIntroVideoPlayed(): void {
-    try {
-      window.localStorage.setItem(INTRO_VIDEO_PLAYED_STORAGE_KEY, 'true');
-    } catch {
-      // Some private browsing modes block local storage; the in-memory registry still covers this play session.
+    writeStorageValue(INTRO_VIDEO_PLAYED_STORAGE_KEY, 'true');
+  }
+
+  private startRequestedModeFromUrl(): void {
+    const requestedMode = new URLSearchParams(window.location.search).get('mode');
+    if (requestedMode !== 'brawler' && requestedMode !== 'shooter') {
+      return;
     }
+
+    this.time.delayedCall(260, () => this.transitionToMode(requestedMode));
   }
 
   private startTitleMusic(): void {
-    this.titleMusic = playLoopingMusic(this, TITLE_SCREEN_MUSIC_KEY, 0.42);
+    playLoopingMusic(this, TITLE_SCREEN_MUSIC_KEY, 0.42);
   }
 
   private stopTitleMusic(): void {
@@ -283,7 +324,8 @@ export class MainMenuScene extends Phaser.Scene {
     mode: MenuMode,
     color: number,
   ): MenuOption {
-    const panel = this.add.rectangle(0, 0, 354, 58, 0x07090d, 0.74)
+    const optionWidth = 410;
+    const panel = this.add.rectangle(0, 0, optionWidth, 58, 0x07090d, 0.74)
       .setOrigin(0, 0.5)
       .setStrokeStyle(2, color, 0.5);
     const accent = this.add.rectangle(14, 0, 5, 34, color, 0.88)
@@ -297,15 +339,16 @@ export class MainMenuScene extends Phaser.Scene {
     }).setOrigin(0, 0.5);
     const subtitle = this.add.text(34, 14, subtitleText, {
       fontFamily: 'Arial, sans-serif',
-      fontSize: '13px',
+      fontSize: '12px',
       color: '#b9cce0',
+      wordWrap: { width: optionWidth - 82 },
     }).setOrigin(0, 0.5);
-    const chevron = this.add.triangle(326, 0, 0, -9, 0, 9, 14, 0, color, 0.96)
+    const chevron = this.add.triangle(optionWidth - 28, 0, 0, -9, 0, 9, 14, 0, color, 0.96)
       .setOrigin(0.5);
 
     const container = this.add.container(x, y, [panel, accent, title, subtitle, chevron]);
-    container.setSize(354, 58);
-    container.setInteractive(new Phaser.Geom.Rectangle(0, -29, 354, 58), Phaser.Geom.Rectangle.Contains);
+    container.setSize(optionWidth, 58);
+    container.setInteractive(new Phaser.Geom.Rectangle(0, -29, optionWidth, 58), Phaser.Geom.Rectangle.Contains);
     container.on('pointerover', () => this.selectOptionByMode(mode));
     container.on('pointerdown', () => this.selectMode(mode));
 
@@ -372,16 +415,30 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   private startGame(): void {
-    playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.34 });
-    this.stopTitleMusic();
-    this.scene.start('GameScene');
-    this.scene.launch('UIScene');
+    this.transitionToMode('brawler');
   }
 
   private startRunGun(): void {
+    this.transitionToMode('shooter');
+  }
+
+  private transitionToMode(mode: MenuMode): void {
+    if (this.isStarting) {
+      return;
+    }
+
+    this.isStarting = true;
     playSfx(this, SFX_UI_SELECT_KEY, { volume: 0.34 });
     this.stopTitleMusic();
-    this.scene.stop('UIScene');
-    this.scene.start('RunGunScene');
+    this.cameras.main.fadeOut(180, 7, 9, 13);
+    this.time.delayedCall(190, () => {
+      if (mode === 'shooter') {
+        this.scene.stop('UIScene');
+        this.scene.start('RunGunScene');
+        return;
+      }
+
+      this.scene.start('GameScene');
+    });
   }
 }

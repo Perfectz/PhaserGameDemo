@@ -26,6 +26,8 @@ export class UIScene extends Phaser.Scene {
   private hudGraphics?: Phaser.GameObjects.Graphics;
   private healthText?: Phaser.GameObjects.Text;
   private stateText?: Phaser.GameObjects.Text;
+  private specialText?: Phaser.GameObjects.Text;
+  private objectiveText?: Phaser.GameObjects.Text;
   private levelText?: Phaser.GameObjects.Text;
   private enemyText?: Phaser.GameObjects.Text;
   private stageClearText?: Phaser.GameObjects.Text;
@@ -38,7 +40,6 @@ export class UIScene extends Phaser.Scene {
   private pauseButton?: Phaser.GameObjects.Container;
   private gamepadControls?: GamepadControls;
   private isGameOver = false;
-  private lastHudState?: HudState;
 
   constructor() {
     super('UIScene');
@@ -99,6 +100,23 @@ export class UIScene extends Phaser.Scene {
       letterSpacing: 1,
     }).setDepth(1002);
 
+    this.specialText = this.add.text(302, 55, 'SPECIAL READY', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '9px',
+      color: '#8ecae6',
+      align: 'right',
+      letterSpacing: 1,
+    }).setOrigin(1, 0).setDepth(1002);
+
+    this.objectiveText = this.add.text(480, 31, 'CLEAR WAVE 1', {
+      fontFamily: 'Arial Black, Arial, sans-serif',
+      fontSize: '12px',
+      color: '#f8fbff',
+      stroke: '#07090d',
+      strokeThickness: 3,
+      align: 'center',
+    }).setOrigin(0.5, 0).setDepth(1002);
+
     this.levelText = this.add.text(816, 25, 'TRAINING STREET', {
       fontFamily: 'Arial Black, Arial, sans-serif',
       fontSize: '12px',
@@ -131,11 +149,15 @@ export class UIScene extends Phaser.Scene {
   }
 
   private updateHud(state: HudState): void {
-    this.lastHudState = state;
     this.drawHud(state);
 
     this.healthText?.setText(`${state.playerHealth} / ${PLAYER_MAX_HEALTH}`);
     this.stateText?.setText(state.playerState.toUpperCase());
+    this.specialText?.setText(state.specialReadyPercent >= 1
+      ? 'SPECIAL READY'
+      : `SPECIAL ${Math.round(Phaser.Math.Clamp(state.specialReadyPercent, 0, 1) * 100)}%`);
+    this.specialText?.setColor(state.specialReadyPercent >= 1 ? '#ffd166' : '#8ecae6');
+    this.objectiveText?.setText(this.getObjectiveLabel(state));
     this.levelText?.setText(state.levelName.toUpperCase());
     this.enemyText?.setText(`WAVE ${state.wave}  /  ENEMIES ${state.enemyCount}`);
     this.stageClearText?.setVisible(state.stageClear);
@@ -152,6 +174,7 @@ export class UIScene extends Phaser.Scene {
 
     graphics.clear();
     this.drawPlayerPlate(graphics, state.playerHealth / PLAYER_MAX_HEALTH, state.specialReadyPercent);
+    this.drawObjectivePlate(graphics, state);
     this.drawWavePlate(graphics, state.stageClear);
     if (state.bossName && state.bossHealthPercent !== undefined) {
       this.drawBossPlate(graphics, state.bossHealthPercent);
@@ -223,6 +246,39 @@ export class UIScene extends Phaser.Scene {
     graphics.fillCircle(x + 18, y + 18, 4);
     graphics.lineStyle(2, 0xffd166, 0.62);
     graphics.lineBetween(x + 18, y + height - 8, x + 72, y + height - 8);
+  }
+
+  private drawObjectivePlate(graphics: Phaser.GameObjects.Graphics, state: HudState): void {
+    const x = 384;
+    const y = 18;
+    const width = 212;
+    const height = 38;
+    const accent = state.stageClear ? 0x06d6a0 : state.advancePrompt ? 0xffd166 : 0x8ecae6;
+
+    graphics.fillStyle(0x071019, 0.66);
+    graphics.fillRoundedRect(x + 3, y + 4, width, height, 9);
+    graphics.fillStyle(0x101823, 0.82);
+    graphics.fillRoundedRect(x, y, width, height, 9);
+    graphics.lineStyle(2, accent, 0.58);
+    graphics.strokeRoundedRect(x, y, width, height, 9);
+    graphics.fillStyle(accent, 0.9);
+    graphics.fillRect(x + 14, y + height - 8, width - 28, 2);
+  }
+
+  private getObjectiveLabel(state: HudState): string {
+    if (state.stageClear) {
+      return 'STAGE CLEAR';
+    }
+
+    if (state.advancePrompt) {
+      return 'MOVE RIGHT';
+    }
+
+    if (state.bossName) {
+      return `DEFEAT ${state.bossName.toUpperCase()}`;
+    }
+
+    return `CLEAR WAVE ${state.wave}`;
   }
 
   private createHudArt(): void {
@@ -357,26 +413,43 @@ export class UIScene extends Phaser.Scene {
       fontSize: '13px',
       color: '#8ecae6',
     }).setOrigin(0.5);
-    const instructions = this.add.text(288, 202, [
-      'MOVE        WASD / ARROWS / LEFT JOYSTICK',
-      'PUNCH       J / X',
-      'KICK        K / B',
-      'JUMP        SPACE or L / A',
-      'EVADE       E / LB / LT',
-      'SPECIAL     I / Y',
-      'SHOT        O / RB or RT',
-      'RUN         SHIFT / LEFT STICK',
-      'PAUSE       P, ESC, PAUSE BUTTON, or START',
-      'RESTART     R or SELECT after defeat',
+    const leftCommands = this.add.text(288, 202, [
+      'MOVE     WASD / ARROWS',
+      'RUN      SHIFT',
+      'PUNCH    J',
+      'KICK     K',
+      'JUMP     SPACE / L',
     ], {
       fontFamily: 'Arial, sans-serif',
       fontSize: '14px',
       color: '#dce9f4',
-      lineSpacing: 7,
+      lineSpacing: 9,
     });
-    const resume = this.createMenuButton(480, 430, 'RESUME', 0x06d6a0, () => this.setGamePause(false));
+    const rightCommands = this.add.text(512, 202, [
+      'EVADE    E',
+      'SPECIAL  I',
+      'SHOT     O',
+      'PAUSE    P / ESC',
+      'PAD      STICK + FACE',
+    ], {
+      fontFamily: 'Arial, sans-serif',
+      fontSize: '14px',
+      color: '#dce9f4',
+      lineSpacing: 9,
+    });
+    const resume = this.createMenuButton(365, 430, 'RESUME', 0x06d6a0, () => this.setGamePause(false));
+    const titleButton = this.createMenuButton(595, 430, 'TITLE', 0xffd166, () => this.requestTitle(), '#151923');
 
-    this.pauseOverlay = this.add.container(0, 0, [shade, panel, title, subtitle, instructions, resume]);
+    this.pauseOverlay = this.add.container(0, 0, [
+      shade,
+      panel,
+      title,
+      subtitle,
+      leftCommands,
+      rightCommands,
+      resume,
+      titleButton,
+    ]);
     this.pauseOverlay.setDepth(20000);
     this.pauseOverlay.setVisible(false);
   }
@@ -513,5 +586,11 @@ export class UIScene extends Phaser.Scene {
     this.setGameOverVisible(false);
     this.setGamePause(false);
     this.scene.get('GameScene').events.emit('restart:requested');
+  }
+
+  private requestTitle(): void {
+    this.pauseOverlay?.setVisible(false);
+    this.scene.get('GameScene').events.emit('pause:set', false);
+    this.scene.get('GameScene').events.emit('title:requested');
   }
 }
