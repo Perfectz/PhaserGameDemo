@@ -17,6 +17,7 @@ import {
 } from '../systems/SoundSystem';
 
 const introVideoUrl = new URL('../../assets/video/intro.mp4', import.meta.url).href;
+const INTRO_VIDEO_PLAYED_STORAGE_KEY = 'neonBrawlerIntroVideoPlayed';
 
 type MenuMode = 'brawler' | 'shooter';
 
@@ -57,7 +58,7 @@ export class MainMenuScene extends Phaser.Scene {
     this.input.once('pointerdown', () => this.startTitleMusic());
     this.input.keyboard?.once('keydown', () => this.startTitleMusic());
 
-    if (!this.registry.get('introVideoPlayed')) {
+    if (!this.hasSeenIntroVideo()) {
       this.playIntroSequence();
       return;
     }
@@ -192,10 +193,36 @@ export class MainMenuScene extends Phaser.Scene {
 
     this.introComplete = true;
     this.registry.set('introVideoPlayed', true);
+    this.persistIntroVideoPlayed();
     introVideo.pause();
     overlay.remove();
     this.createTitleMenu();
     this.cameras.main.fadeIn(220, 7, 9, 13);
+  }
+
+  private hasSeenIntroVideo(): boolean {
+    if (this.registry.get('introVideoPlayed')) {
+      return true;
+    }
+
+    if (new URLSearchParams(window.location.search).get('skipIntro') === '1') {
+      this.persistIntroVideoPlayed();
+      return true;
+    }
+
+    try {
+      return window.localStorage.getItem(INTRO_VIDEO_PLAYED_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  private persistIntroVideoPlayed(): void {
+    try {
+      window.localStorage.setItem(INTRO_VIDEO_PLAYED_STORAGE_KEY, 'true');
+    } catch {
+      // Some private browsing modes block local storage; the in-memory registry still covers this play session.
+    }
   }
 
   private startTitleMusic(): void {
